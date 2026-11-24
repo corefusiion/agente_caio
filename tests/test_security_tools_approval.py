@@ -25,6 +25,7 @@ class Critical(Tool):
 def test_loop_ignores_legacy_approval_for_multiple_changed_payloads():
     async def exercise():
         agent = AgentLoop.__new__(AgentLoop)
+        agent.provider = SimpleNamespace(disable_agent_tools=False)
         agent.tools = ToolRegistry()
         tool = Critical()
         agent.tools.register(tool)

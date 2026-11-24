@@ -149,6 +149,7 @@ def test_safe_context_and_default_registration(tmp_path):
     assert "chame read_skill com o nome" in prompt
     assert "usando a tool read_file" not in prompt
     provider = Mock()
+    provider.disable_agent_tools = False
     provider.get_default_model.return_value = "test"
     loop = AgentLoop(bus=MessageBus(), provider=provider, workspace=workspace)
     assert isinstance(loop.context.skills, SafeSkillsLoader)

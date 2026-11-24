@@ -3,7 +3,7 @@
 import asyncio
 import email
 import email.message
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -51,17 +51,17 @@ def test_extract_body_truncates_long():
 
 @pytest.mark.asyncio
 async def test_email_read_tool_search():
-    """Test EmailReadTool.search with mocked IMAP."""
+    """Test EmailReadTool.execute search with mocked IMAP."""
     tool = EmailReadTool(
-        imap_host="imap.gmail.com",
-        imap_user="test@example.com",
-        imap_pass="pass",
+        imap_host="imap.example.invalid",
+        username="test@example.invalid",
+        password="fake-password",
     )
 
     with patch("imaplib.IMAP4_SSL") as mock_imap:
         # Mock connection
         mock_instance = MagicMock()
-        mock_imap.return_value.__enter__.return_value = mock_instance
+        mock_imap.return_value = mock_instance
 
         # Mock login
         mock_instance.login.return_value = ("OK", [])
@@ -81,26 +81,31 @@ async def test_email_read_tool_search():
 
         mock_instance.fetch.side_effect = fetch_side_effect
 
-        result = await tool.search(query="test", max_results=2)
+        result = await tool.execute(query="test", max_results=2)
 
-        assert "emails" in result
-        assert len(result["emails"]) > 0
-        assert result["emails"][0]["subject"] == "Test Subject"
-        assert "body" in result["emails"][0]
+        assert "Encontrei 2 e-mail(s)" in result
+        assert result.count("Test Subject") == 2
+        assert result.count("Test email body") == 2
+        mock_imap.assert_called_once_with("imap.example.invalid", 993)
+        mock_instance.login.assert_called_once_with("test@example.invalid", "fake-password")
+        mock_instance.select.assert_called_once_with("INBOX", readonly=True)
+        mock_instance.search.assert_called_once_with(None, 'FROM "test"')
+        assert mock_instance.fetch.call_args_list == [call(b"3", "(RFC822)"), call(b"2", "(RFC822)")]
+        mock_instance.logout.assert_called_once_with()
 
 
 @pytest.mark.asyncio
 async def test_email_read_tool_list():
-    """Test EmailReadTool.list_unread with mocked IMAP."""
+    """Test listing all emails through execute with mocked IMAP."""
     tool = EmailReadTool(
-        imap_host="imap.gmail.com",
-        imap_user="test@example.com",
-        imap_pass="pass",
+        imap_host="imap.example.invalid",
+        username="test@example.invalid",
+        password="fake-password",
     )
 
     with patch("imaplib.IMAP4_SSL") as mock_imap:
         mock_instance = MagicMock()
-        mock_imap.return_value.__enter__.return_value = mock_instance
+        mock_imap.return_value = mock_instance
         mock_instance.login.return_value = ("OK", [])
         mock_instance.select.return_value = ("OK", [])
         mock_instance.search.return_value = ("OK", [b"1 2 3"])
@@ -115,6 +120,13 @@ async def test_email_read_tool_list():
 
         mock_instance.fetch.side_effect = fetch_side_effect
 
-        result = await tool.list_unread(limit=2)
-        assert "emails" in result
-        assert len(result["emails"]) > 0
+        result = await tool.execute(query="ALL", max_results=2)
+        assert "Encontrei 2 e-mail(s)" in result
+        assert result.count("Important") == 2
+        assert result.count("Unread email") == 2
+        mock_imap.assert_called_once_with("imap.example.invalid", 993)
+        mock_instance.login.assert_called_once_with("test@example.invalid", "fake-password")
+        mock_instance.select.assert_called_once_with("INBOX", readonly=True)
+        mock_instance.search.assert_called_once_with(None, "ALL")
+        assert mock_instance.fetch.call_args_list == [call(b"3", "(RFC822)"), call(b"2", "(RFC822)")]
+        mock_instance.logout.assert_called_once_with()

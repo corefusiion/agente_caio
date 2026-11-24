@@ -13,7 +13,7 @@ def mock_prompt_session():
     mock_session = MagicMock()
     mock_session.prompt_async = AsyncMock()
     with patch("caiocore.cli.commands._PROMPT_SESSION", mock_session), \
-         patch("caiocore.cli.commands.patch_stdout"):
+         patch("prompt_toolkit.patch_stdout.patch_stdout"):
         yield mock_session
 
 
@@ -44,8 +44,8 @@ def test_init_prompt_session_creates_session():
     # Ensure global is None before test
     commands._PROMPT_SESSION = None
     
-    with patch("caiocore.cli.commands.PromptSession") as MockSession, \
-         patch("caiocore.cli.commands.FileHistory") as MockHistory, \
+    with patch("prompt_toolkit.PromptSession") as MockSession, \
+         patch("prompt_toolkit.history.FileHistory") as MockHistory, \
          patch("pathlib.Path.home") as mock_home:
         
         mock_home.return_value = MagicMock()
