@@ -6,6 +6,29 @@ import { startShareReceipt } from '../src/lib/share-receipt.js';
 
 const read = path => readFile(new URL(path, import.meta.url), 'utf8');
 
+test('manifesto contém PNGs RGBA do rosto nas dimensões declaradas', async () => {
+  const manifest = JSON.parse(await read('../public/manifest.webmanifest'));
+  assert.equal(manifest.icons.length, 2);
+  for (const [index, size] of [192, 512].entries()) {
+    const icon = manifest.icons[index];
+    assert.deepEqual(icon, { src: `icons/caio-rosto-${size}.png`, sizes: `${size}x${size}`, type: 'image/png' });
+    const image = await readFile(new URL(`../public/${icon.src}`, import.meta.url));
+    assert.deepEqual(image.subarray(0, 8), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    assert.equal(image.toString('ascii', 12, 16), 'IHDR');
+    assert.equal(image.readUInt32BE(16), size);
+    assert.equal(image.readUInt32BE(20), size);
+    assert.equal(image[24], 8);
+    assert.equal(image[25], 6); // RGBA
+    assert.equal(new URL(icon.src, 'https://example.test/app/manifest.webmanifest').pathname, `/app/icons/caio-rosto-${size}.png`);
+  }
+});
+
+test('ícone do navegador usa o rosto escolhido sem ativar o manifesto', async () => {
+  const html = await read('../index.html');
+  assert.match(html, /<link\b[^>]*rel=["']icon["'][^>]*href=["']\/icons\/caio-rosto-192\.png["']/i);
+  assert.doesNotMatch(html, /<link\b[^>]*\brel\s*=\s*["']manifest["']/i);
+});
+
 test('manifest não anuncia share target nem é vinculado pelo dashboard', async () => {
   const manifest = JSON.parse(await read('../public/manifest.webmanifest'));
   assert.equal(Object.hasOwn(manifest, 'share_target'), false);
