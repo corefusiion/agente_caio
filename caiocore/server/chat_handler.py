@@ -5,6 +5,7 @@ from typing import Optional, List, Any
 from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException, Depends
 from loguru import logger
+from caiocore.providers.base import ProviderCallError
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -78,6 +79,8 @@ async def chat_message(req: ChatRequest, agent = Depends(get_agent)):
             content=final_response,
         )
         
+    except ProviderCallError as e:
+        return ChatResponse(id=uuid.uuid4().hex[:8], content=str(e), status="error")
     except asyncio.TimeoutError:
         logger.warning("Chat: timeout após 120s para mensagem: {}", req.message[:50])
         return ChatResponse(

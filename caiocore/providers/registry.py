@@ -70,6 +70,9 @@ class ProviderSpec:
 # ---------------------------------------------------------------------------
 
 PROVIDERS: tuple[ProviderSpec, ...] = (
+    # Explicit selection only; never an implicit fallback.
+    ProviderSpec(name="opencode", keywords=(), env_key="OPENCODE_API_KEY",
+                 display_name="OpenCode", is_direct=True),
 
     # === Custom (direct OpenAI-compatible endpoint, bypasses LiteLLM) ======
     ProviderSpec(

@@ -505,6 +505,19 @@ def _make_provider(config: Config):
     provider_name = config.get_provider_name(model)
     p = config.get_provider(model)
 
+    if provider_name == "opencode":
+        import os
+        from caiocore.providers.opencode_provider import OpenCodeProvider
+        if not p or not p.enabled:
+            raise ValueError("OpenCode está desativado; habilite providers.opencode.enabled.")
+        if p.api_key or p.extra_headers:
+            raise ValueError("OpenCode aceita chave apenas em OPENCODE_API_KEY e não aceita cabeçalhos extras.")
+        return OpenCodeProvider(
+            api_key=os.environ.get("OPENCODE_API_KEY", ""),
+            api_base=p.api_base,
+            default_model=model,
+        )
+
     # OpenAI Codex (OAuth)
     if provider_name == "openai_codex" or model.startswith("openai-codex/"):
         return OpenAICodexProvider(default_model=model)

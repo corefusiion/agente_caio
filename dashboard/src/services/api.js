@@ -5,13 +5,9 @@
  * AUTHORITATIVE METADATA: All names, roles, and UI properties are defined here.
  */
 
-// In DEV mode, use Vite's built-in proxy (see vite.config.js server.proxy).
-// This avoids CORS issues when the frontend (5177) calls the backend (18790).
-// In production, Traefik routes /api to the gateway on the same domain.
-const API_PORT = 18790
-export const BASE_URL = import.meta.env.VITE_API_URL ||
-                 (import.meta.env.DEV ? `` :
-                 (window.location.port ? `${window.location.protocol}//${window.location.hostname}:${API_PORT}` : ''))
+// All API, downloads and SSE requests use the same origin as the UI.
+// The server-side local proxy supplies the gateway credential; never bundle it.
+export const BASE_URL = ''
 
 // ─── UTILS ─────────────────────────────────────────────────────────
 
@@ -215,22 +211,16 @@ export const AGENT_UI_META = {
     },
 }
 
-// Static specialist data (not served by backend agents yet)
+// Empty collections preserve the UI contract; they do not prove a connection.
 const SPECIALIST_DEFAULTS = {
     'spec-email': {
-        status: 'online', statusDetail: 'ATIVO',
-        metrics: { emailsProcessed: 47, unread: 3, urgentAlerts: 1, lastCheck: '2026-02-24T13:44:00' },
-        monitorData: {
-            inbox: [
-                { from: 'contato@embasa.ba.gov.br', subject: '[URGENTE] Relatório trimestral solicitado', priority: 'urgent', time: '10:32', read: false },
-                { from: 'noreply@vivo.com.br', subject: 'Fatura Vivo — R$ 189,90 vencendo 25/02', priority: 'normal', time: '08:15', read: false },
-                { from: 'calendar@google.com', subject: 'Reunião de alinhamento confirmada', priority: 'info', time: '07:00', read: true },
-            ],
-        },
+        status: 'offline', statusDetail: 'Conexão não verificada',
+        metrics: { emailsProcessed: null, unread: null, urgentAlerts: null, lastCheck: null },
+        monitorData: { inbox: [] },
     },
     'spec-schedule': {
-        status: 'online', statusDetail: 'ATIVO',
-        metrics: { activeCrons: 0, nextEvent: null, eventsToday: 0, alertsPending: 0 },
+        status: 'offline', statusDetail: 'Conexão não verificada',
+        metrics: { activeCrons: null, nextEvent: null, eventsToday: null, alertsPending: null },
         monitorData: {
             crons: [],
             upcomingEvents: [],
@@ -294,6 +284,19 @@ function normalizeMetrics(raw) {
     }
 }
 
+// Empty data is not evidence that an account is connected.
+async function fetchInboxData() {
+    const data = await fetchAPI('/api/agent/email/inbox')
+    return data && data.status !== 'error' && Array.isArray(data.inbox)
+        && data.inbox.every(item => item && typeof item === 'object' && !Array.isArray(item)) ? data.inbox : null
+}
+
+function validScheduleData(data) {
+    return data && typeof data === 'object' && !Array.isArray(data) && data.status !== 'error'
+        && Array.isArray(data.crons) && Array.isArray(data.upcomingEvents)
+        && (data.metrics == null || (typeof data.metrics === 'object' && !Array.isArray(data.metrics)))
+}
+
 function enrichAgent(liveAgent) {
     const id = liveAgent.agent || liveAgent.id
     const ui = AGENT_UI_META[id] || {}
@@ -339,52 +342,43 @@ export const api = {
 
 
     async getAgents() {
-        return cachedFetch('agents:all', async () => {
-            const liveAgents = await fetchAPI('/api/agents')
-
-            // Build base list from UI meta (ensure all expected agents exist)
-            const agentsMap = {}
-            Object.entries(AGENT_UI_META).forEach(([id, ui]) => {
-                agentsMap[id] = enrichAgent({ id, ...ui, status: 'offline' })
+        // Avoid returning stale connection states while a refresh fails.
+        const liveAgents = await fetchAPI('/api/agents')
+        const agentsMap = {}
+        Object.entries(AGENT_UI_META).forEach(([id, ui]) => {
+            agentsMap[id] = enrichAgent({ id, ...ui, status: 'offline' })
+        })
+        if (Array.isArray(liveAgents)) {
+            liveAgents.forEach(la => {
+                const id = la.agent || la.id
+                agentsMap[id] = enrichAgent(la)
             })
+        }
+        const [inbox, schedule] = await Promise.all([
+            fetchInboxData().catch(() => null),
+            api.getScheduleData().catch(() => null),
+        ])
 
-            if (liveAgents && Array.isArray(liveAgents)) {
-                liveAgents.forEach(la => {
-                    const id = la.agent || la.id
-                    agentsMap[id] = enrichAgent(la)
-                })
-            }
-
-            const [inbox, schedule] = await Promise.all([
-                api.getEmailInbox().catch(() => null),
-                api.getScheduleData().catch(() => null),
-            ])
-
-            if (inbox && agentsMap['spec-email']) {
-                agentsMap['spec-email'].monitorData = { ...agentsMap['spec-email'].monitorData, inbox };
-                agentsMap['spec-email'].metrics.unread = inbox.filter(i => !i.read).length;
-                agentsMap['spec-email'].status = 'online';
-                agentsMap['spec-email'].statusDetail = 'Ativo (Live IMAP)';
-                agentsMap['spec-email'].metrics.emailsProcessed = inbox.length;
-                agentsMap['spec-email'].metrics.urgentAlerts = inbox.filter(i => i.priority === 'urgent').length;
-            }
-
-            if (schedule && agentsMap['spec-schedule']) {
-                agentsMap['spec-schedule'].monitorData = {
-                    crons: schedule.crons || [],
-                    upcomingEvents: schedule.upcomingEvents || []
-                };
-                agentsMap['spec-schedule'].metrics = {
-                    ...agentsMap['spec-schedule'].metrics,
-                    ...schedule.metrics
-                };
-                agentsMap['spec-schedule'].status = 'online';
-                agentsMap['spec-schedule'].statusDetail = 'Ativo (Sincronizado)';
-            }
-
-
-            return Object.values(agentsMap).filter(a => !a.hidden)
-        }, 10000) // 10s TTL — stale-while-revalidate
+        // The server returns empty data even without an email channel or when
+        // Google Calendar authentication fails. Neither response proves health.
+        const emailAgent = agentsMap['spec-email']
+        const scheduleAgent = agentsMap['spec-schedule']
+        emailAgent.status = 'offline'
+        emailAgent.statusDetail = inbox === null ? 'Dados indisponíveis' : 'Conexão não verificada'
+        emailAgent.metrics = { ...emailAgent.metrics, emailsProcessed: null, unread: null, urgentAlerts: null, lastCheck: null }
+        scheduleAgent.status = 'offline'
+        scheduleAgent.statusDetail = validScheduleData(schedule) ? 'Conexão não verificada' : 'Dados indisponíveis'
+        scheduleAgent.metrics = { ...scheduleAgent.metrics, activeCrons: null, nextEvent: null, eventsToday: null, alertsPending: null }
+        if (inbox !== null) {
+            emailAgent.monitorData = { ...emailAgent.monitorData, inbox }
+            emailAgent.metrics.unread = inbox.filter(i => !i.read).length
+            emailAgent.metrics.urgentAlerts = inbox.filter(i => i.priority === 'urgent').length
+        }
+        if (validScheduleData(schedule)) {
+            scheduleAgent.monitorData = { crons: schedule.crons, upcomingEvents: schedule.upcomingEvents }
+            scheduleAgent.metrics = { ...scheduleAgent.metrics, ...schedule.metrics }
+        }
+        return Object.values(agentsMap).filter(a => !a.hidden)
     },
 
 
@@ -426,8 +420,7 @@ export const api = {
 
     // ── Email Agent (LIVE) ──────────────────────────────
     async getEmailInbox() {
-        const data = await fetchAPI('/api/agent/email/inbox');
-        return data?.inbox || [];
+        return (await fetchInboxData()) || [];
     },
 
     // ── Life Agent (LIVE) ───────────────────────────────
@@ -520,12 +513,18 @@ export const api = {
         const defaults = [
             { id: 'gateway', name: 'Gateway API', status: 'online', port: 18795, response: '12ms' },
             { id: 'tg', name: 'Telegram Bot', status: 'online', uptime: '2h 15m', response: '120ms' },
-            { id: 'email', name: 'Email (IMAP)', status: 'online', uptime: '2h 15m', response: '4.2s' },
+            { id: 'email', name: 'Email (IMAP)', status: 'offline' },
             { id: 'supabase', name: 'Supabase', status: 'online', uptime: '99.9%', response: '180ms' },
         ]
-        if (real?.services) {
+        if (real?.status !== 'error' && Array.isArray(real?.services)) {
             const liveIds = new Set(real.services.map(s => s.id))
-            const merged = [...real.services]
+            // The backend reports email enabled in config as online and uses a
+            // fixed response time, not a verified IMAP connection or measurement.
+            const merged = real.services.map(s => {
+                if (s.id !== 'email') return s
+                const { uptime, response, ...email } = s
+                return { ...email, status: 'offline' }
+            })
             defaults.forEach(s => { if (!liveIds.has(s.id)) merged.push(s) })
             return merged
         }

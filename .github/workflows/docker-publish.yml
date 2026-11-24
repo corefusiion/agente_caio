@@ -1,8 +1,10 @@
 name: Build & Push Docker Images
 
 on:
-  push:
-    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build-and-push:

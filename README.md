@@ -1,4 +1,45 @@
 <div align="center">
+  <img src="docs/caio-banner.png" alt="Caio, assistente pessoal: suas ideias e conversas, do seu jeito" width="100%" />
+</div>
+
+# Caio
+
+Um assistente pessoal em desenvolvimento, com uma interface de conversa e bases para recursos que ainda precisam ser integrados e validados. Este README distingue o que existe no código do que continua sendo plano — não é uma promessa de funcionamento em produção.
+
+## Estado atual
+
+| Área | O que existe e quais são os limites |
+| --- | --- |
+| **Chat e avatar** | O dashboard tem interface de chat conectada à API e usa o avatar aprovado na tela inicial e no cabeçalho. A operação depende de configuração e dos serviços disponíveis; não há garantia de funcionamento de ponta a ponta em toda instalação. |
+| **Preferências locais** | O tamanho do texto das mensagens pode ser guardado no navegador. Há também uma biblioteca separada de preferências com consentimento explícito; ela **não está ligada ao chat**, não aprende com conversas e tem restrições de plataforma. |
+| **Fila de tarefas** | Há um núcleo local e uma API opcional para um único operador, desligada por padrão. São um protótipo de registro de estados: não executam tarefas, não integram o chat nem comprovam aprovação ou identidade. O componente visual não está integrado à API. A base exige condições específicas de Linux/POSIX e não suporta Windows. |
+| **Telegram** | Canal em desenvolvimento, limitado a texto e comandos de usuários autorizados em conversas privadas. Anexos recebidos não são analisados e saídas com anexos são recusadas. Conexão e entrega reais não foram validadas nesta revisão; **não ativar sem revisão adicional de segurança**. |
+| **Compartilhamento de texto** | É possível colar texto ou link, revisar e acrescentar ao rascunho do chat antes de enviar. Não recebe vídeo nem analisa o conteúdo de um link e não é integrado ao menu de compartilhamento do celular. Para falar de um vídeo, forneça uma descrição ou transcrição. A instrução para não abrir links não impede tecnicamente o uso de ferramentas. |
+| **Vídeo** | Existe apenas uma base isolada de planejamento com metadados informados pelo chamador. Não abre arquivos, extrai áudio ou imagens, transcreve, resume ou analisa vídeos reais; não está integrada à interface ou ao chat. |
+| **Memória experimental** | Há um motor independente de compactação de conversa, mantido apenas em memória e sem integração com o chat ou persistência. Ele não implementa integração com Obsidian e não substitui a memória anterior do projeto. |
+| **Agentes e integrações** | Há código e telas relacionados a agentes e serviços, mas suas capacidades e conexões de ponta a ponta não foram verificadas nesta revisão. Não trate indicadores ou a documentação histórica abaixo como prova de que estão ativos. |
+
+### Privacidade e segurança
+
+O histórico do chat pode ser armazenado localmente e as mensagens enviadas podem ser encaminhadas ao provedor configurado. A área de compartilhamento é uma prévia, não uma sessão privada. Evite inserir senhas, códigos, tokens, links privados e outros dados sensíveis. A interface ainda não oferece isolamento autenticado para múltiplos usuários. Não exponha serviços locais à internet sem uma revisão apropriada de autenticação, autorização e segurança.
+
+## Próximos passos
+
+- Validar chat, configuração e interface em ambientes reais, inclusive Windows, sem apresentar estados não verificados como conectados.
+- Integrar a fila somente depois de identidade, autorização, aprovações e execução segura; testar a experiência completa.
+- Revisar e testar o Telegram com conexões reais e limites de segurança antes de habilitá-lo.
+- Evoluir compartilhamento e análise de vídeo com consentimento, isolamento, limites de recursos e testes adversariais, antes de receber mídia real.
+- Planejar persistência e integração da memória com privacidade, controle do usuário e isolamento entre conversas.
+- Verificar agentes e integrações reais antes de anunciá-los como disponíveis.
+
+---
+
+<details>
+<summary>Documentação original preservada — histórica, não validada</summary>
+
+> **Atenção:** o conteúdo original abaixo foi mantido para consulta histórica. Pode conter descrições aspiracionais, instruções desatualizadas e afirmações não verificadas (inclusive sobre memória, segurança, agentes, desempenho e integrações). Não use essas afirmações como status atual nem como garantia de operação ou segurança. Consulte o estado atual acima e revise as instruções antes de executá-las.
+
+<div align="center">
   <img src="docs/mascote_original_hd.png" alt="Mascote Agente Caio" width="420"/>
   <h1>🛸 CaioCore v5.2 (Sovereign Intelligence)</h1>
   <p><strong>A Solução Suprema para Operações Inteligentes e Framework Unificado de IA</strong></p>
@@ -212,3 +253,5 @@ Preparado pro mundo real com balanceamento de nós em Swarm, proxies dinâmicos 
 <div align="center">
   <p><strong>Agente Caio — A Onipresença Cognitiva da Automação.</strong></p>
 </div>
+
+</details>

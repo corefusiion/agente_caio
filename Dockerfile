@@ -35,11 +35,16 @@ WORKDIR /app/bridge
 RUN npm install && npm run build
 WORKDIR /app
 
-# Create config directory
-RUN mkdir -p /root/.caiocore
+# Usuário sem privilégios; o volume de workspace novo herda esta propriedade.
+RUN groupadd --gid 10001 caio && \
+    useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin caio && \
+    mkdir -p /home/caio/.caiocore/workspace && \
+    chown -R 10001:10001 /home/caio
+ENV HOME=/home/caio
+USER 10001:10001
 
-# Gateway default port
-EXPOSE 18795
+# Porta padrão real do gateway.
+EXPOSE 18790
 
 ENTRYPOINT ["caio"]
 CMD ["status"]

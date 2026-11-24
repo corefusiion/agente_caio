@@ -14,13 +14,7 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
-  server: {
-    proxy: {
-      '/api': {
-        target: 'http://localhost:18790',
-        changeOrigin: true,
-        secure: false,
-      }
-    }
-  }
+  // The unauthenticated Vite proxy must not bypass the gateway boundary.
+  // Use the built dashboard through secure_proxy.py for API-connected testing.
+  server: { host: '127.0.0.1', strictPort: true, port: 5173, cors: false }
 })

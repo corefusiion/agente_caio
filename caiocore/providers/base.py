@@ -5,6 +5,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+class ProviderCallError(RuntimeError):
+    """A redacted provider failure suitable for reporting to the caller."""
+
+
 @dataclass
 class ToolCallRequest:
     """A tool call request from the LLM."""

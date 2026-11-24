@@ -1,9 +1,11 @@
-name: Build and Deploy
+# Publicação manual somente após revisão; não faz deploy em servidores.
+name: Build and Push (manual)
 
 on:
-  push:
-    branches: [ main, master ]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build-and-deploy:
@@ -40,28 +42,3 @@ jobs:
           tags: caiocorp/caio-dashboard:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      - name: Build and push Bridge
-        uses: docker/build-push-action@v5
-        with:
-          context: ./bridge
-          file: ./bridge/Dockerfile
-          push: true
-          tags: caiocorp/caio-bridge:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Deploy to VPS (Swarm)
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_PORT || 22 }}
-          script: |
-            cd /root/agente_caio
-            docker stack deploy -c docker-compose.yml caio --with-registry-auth --resolve-image always
-            docker service update --force caio_caio-agent
-            docker service update --force caio_caio-dashboard
-            docker service update --force caio_caio-bridge
-            docker system prune -f

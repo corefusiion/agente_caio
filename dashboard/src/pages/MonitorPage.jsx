@@ -78,17 +78,17 @@ export default function MonitorPage() {
   const sso = agents.find(a => a.agent === 'agent-sso')
   const life = agents.find(a => a.agent === 'agent-life')
   
-  const totalTokensRaw = tokenStats?.tokens_total_today || 0
+  const totalTokensRaw = typeof tokenStats?.tokens_total_today === 'number' ? tokenStats.tokens_total_today : null
   const dailyHistory = tokenStats?.daily_history || {}
   const hist = Object.values(dailyHistory).slice(-12).map(v => Math.round(v / 1000))
 
   const maxT = Math.max(...(hist.length ? hist : [1]))
 
   const metrics = [
-    { label: 'Saúde', value: sso ? '99.9%' : '—', sub: 'Todos os sistemas', icon: Activity, color: 'text-emerald-500', bg: 'bg-emerald-50' },
+    { label: 'Saúde', value: '—', sub: 'Não verificada', icon: Activity, color: 'text-emerald-500', bg: 'bg-emerald-50' },
     { label: 'Uptime', value: sso?.uptime || '—', sub: 'Desde último restart', icon: Clock, color: 'text-blue-500', bg: 'bg-blue-50' },
-    { label: 'Tokens H.', value: totalTokensRaw >= 1000 ? `${(totalTokensRaw/1000).toFixed(1)}K` : totalTokensRaw, sub: 'Hoje acumulado', icon: Zap, color: 'text-amber-500', bg: 'bg-amber-50' },
-    { label: 'Alertas', value: life?.metrics?.alerts_active || 0, sub: 'Ativos agora', icon: AlertTriangle, color: 'text-rose-500', bg: 'bg-rose-50' },
+    { label: 'Tokens H.', value: totalTokensRaw === null ? '—' : totalTokensRaw >= 1000 ? `${(totalTokensRaw/1000).toFixed(1)}K` : totalTokensRaw, sub: 'Hoje acumulado', icon: Zap, color: 'text-amber-500', bg: 'bg-amber-50' },
+    { label: 'Alertas', value: life?.metrics?.alerts_active ?? '—', sub: 'Ativos agora', icon: AlertTriangle, color: 'text-rose-500', bg: 'bg-rose-50' },
   ]
 
   return (
@@ -171,7 +171,7 @@ export default function MonitorPage() {
                   ))}
                   <div className="grid grid-cols-2 gap-2 pt-3 mt-2 border-t border-zinc-100">
                     <div className="rounded-xl bg-white p-3"><p className="text-[10px] text-zinc-300 mb-0.5">Ping</p><p className="text-[13px] font-semibold text-zinc-700">{sso.metrics.ping}</p></div>
-                    <div className="rounded-xl bg-white p-3"><p className="text-[10px] text-zinc-300 mb-0.5">Rede</p><p className="text-[13px] font-semibold text-emerald-500">Ativo</p></div>
+                    <div className="rounded-xl bg-white p-3"><p className="text-[10px] text-zinc-500 mb-0.5">Rede</p><p className="text-[13px] font-semibold text-zinc-600">Não verificada</p></div>
                   </div>
                 </div>
               ) : <p className="text-zinc-300 text-[12px]">Offline</p>}
@@ -196,21 +196,8 @@ export default function MonitorPage() {
             </div>
             <div>
               <p className="text-[13px] font-semibold text-zinc-700 mb-3">Log do Sistema</p>
-              <div className="rounded-xl bg-zinc-50/60 p-3 space-y-0.5 font-mono text-[11px] h-[160px] overflow-y-auto custom-scrollbar">
-                {[
-                  {t:'13:47:42',l:'info',m:'API: Telegram notification sent'},
-                  {t:'13:47:40',l:'info',m:'E-mail check: 0 novas mensagens'},
-                  {t:'13:46:30',l:'info',m:'[EXPORT] Download: 3 CSVs'},
-                  {t:'13:45:20',l:'info',m:'Bot @CaioAgentbot connected'},
-                  {t:'13:45:19',l:'info',m:'Uvicorn on port 18790'},
-                  {t:'13:45:16',l:'debug',m:'Agent init — model: grok-4.1'},
-                ].map((l,i) => (
-                  <div key={i} className="flex gap-2 py-1 px-1.5 rounded hover:bg-white/80 transition-colors text-zinc-400">
-                    <span className="text-zinc-300 w-14 shrink-0">{l.t}</span>
-                    <span className={cn("w-10 shrink-0 font-semibold", l.l==='error'?'text-rose-400':l.l==='debug'?'text-blue-400':'text-emerald-400')}>{l.l}</span>
-                    <span className="text-zinc-500 truncate">{l.m}</span>
-                  </div>
-                ))}
+              <div className="rounded-xl bg-zinc-50/60 p-4 text-sm text-zinc-600">
+                Registros do sistema indisponíveis nesta tela.
               </div>
             </div>
           </div>

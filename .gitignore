@@ -48,3 +48,6 @@ caiocore/extras/api.env
 docker-compose.portainer.yml
 caio-stack/core/token.json
 caio-stack/core/credentials.json
+
+# Conversas e dados pessoais não devem ir para o repositório.
+workspace/sessions/

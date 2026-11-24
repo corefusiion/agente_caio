@@ -31,9 +31,9 @@ import uuid
 from typing import Any, List, Optional
 
 import json
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Depends, Request, Response
+from caiocore.server.security import SecurityMiddleware
+from pydantic import BaseModel, StrictBool, StrictInt, StrictStr
 from loguru import logger
 
 # Get logger (for pydantic, if needed, otherwise loguru is primary)
@@ -47,13 +47,7 @@ app = FastAPI(title="Caio Gateway API", version="2.0.0")
 app.include_router(chat_router)
 app.include_router(a2a_router)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(SecurityMiddleware)
 
 # Store references to gateway components
 _agent = None
@@ -543,36 +537,20 @@ async def get_events(
 
 # ── Tracing stream endpoint (SSE) ───────────────────────────────────
 
-from fastapi.responses import StreamingResponse
-
 @app.get("/api/tracing/stream")
 async def tracing_stream():
-    """Server-Sent Events stream for real-time agent tracing."""
-    from caiocore.agents.events import broadcaster
-    
-    async def event_generator():
-        # Register a new queue for this client
-        queue = await broadcaster.subscribe()
-        try:
-            while True:
-                try:
-                    # Wait for data with timeout for keepalive
-                    data = await asyncio.wait_for(queue.get(), timeout=15.0)
-                    yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
-                except asyncio.TimeoutError:
-                    # Send keepalive comment to prevent proxy/Traefik from closing
-                    yield ": keepalive\n\n"
-        except asyncio.CancelledError:
-            await broadcaster.unsubscribe(queue)
-            raise
-        except Exception as e:
-            logger.error(f"SSE Error: {e}")
-            await broadcaster.unsubscribe(queue)
+    """Disabled: global tracing events have no authenticated session ownership.
 
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    The gateway bearer token authenticates access to the API, not ownership of
+    individual chat sessions. The current broadcaster sends raw events from
+    every channel to every subscriber. A client-supplied session ID or a
+    browser-side filter cannot safely fix that. Do not subscribe or stream
+    until both ownership and server-side data minimization are implemented.
+    """
+    raise HTTPException(
+        status_code=503,
+        detail="Tracing stream disabled: session isolation unavailable",
+        headers={"Cache-Control": "no-store"},
     )
 
 # ── Tracing history endpoint ────────────────────────────────────────
@@ -653,32 +631,15 @@ _DOC_ICONS = {
 
 @app.get("/api/documents")
 async def list_documents():
-    """List all generated documents from out/ directory and recover strays."""
+    """List generated documents without modifying the filesystem."""
     docs = []
     
     # Check both the project local /out and the global agent workspace /out
     out_dir_local = _Path(_DOCS_OUT)
     out_dir_agent = _Path(os.path.expanduser("~")) / ".caiocore" / "workspace" / "out"
     
-    # Optional fallback for the user's desktop folder 'Direta' to ensure files are visible
-    desktop_direta = _Path(os.path.expanduser("~")) / "Desktop" / "Direta"
-    stray_desktop_pdf = _Path(os.path.expanduser("~")) / "Desktop" / "PDF_20260305_211524.pdf"
-    
-    # Recover stray PDF from desktop
-    if stray_desktop_pdf.exists():
-        try:
-            shutil.move(str(stray_desktop_pdf), str(out_dir / stray_desktop_pdf.name))
-        except Exception:
-            pass
-
-    # Recover direty files from Direta folder
-    if desktop_direta.exists():
-        for f in desktop_direta.iterdir():
-            if f.is_file() and f.suffix.lower() in _DOC_ICONS:
-                try:
-                    shutil.copy2(str(f), str(out_dir_local / f.name))
-                except Exception:
-                    pass
+    # GET must not silently copy or move files: browsers can issue it without
+    # an Origin header, including from an untrusted cross-site page.
 
     seen_files = set()
     
@@ -847,19 +808,102 @@ async def generate_from_template(req: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _document_secure_open_supported():
+    # Windows lacks the dir_fd/O_NOFOLLOW guarantees used below. Never fall
+    # back to a path-based check followed by a separate open.
+    return (_sys.platform.startswith("linux") and os.open in os.supports_dir_fd
+            and all(hasattr(os, flag) for flag in ("O_NOFOLLOW", "O_DIRECTORY", "O_NONBLOCK")))
+
+
+def _open_document(directory: str, filename: str):
+    """Open a single-link regular file beneath directory without following links.
+
+    Traverse every directory component using held directory descriptors, then
+    return the already-open file descriptor. Nothing later reopens its pathname.
+    """
+    import stat
+
+    if (not filename or filename in (".", "..") or "/" in filename
+            or "\\" in filename or "\x00" in filename):
+        raise OSError("Invalid document name")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    directory_fd = os.open(os.path.sep, flags)
+    try:
+        for part in os.path.abspath(directory).split(os.path.sep):
+            if not part:
+                continue
+            next_fd = os.open(part, flags, dir_fd=directory_fd)
+            os.close(directory_fd)
+            directory_fd = next_fd
+        fd = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                     dir_fd=directory_fd)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise OSError("Not a single-link regular document")
+            return fd, info
+        except BaseException:
+            os.close(fd)
+            raise
+    finally:
+        os.close(directory_fd)
+
+
+from starlette.responses import FileResponse as _FileResponse
+
+
+class _DocumentDownloadResponse(_FileResponse):
+    """Serve the checked Linux descriptor, retaining FileResponse range support."""
+
+    def __init__(self, fd, info, filename):
+        # procfs' magic link names the held descriptor, not the original path.
+        # Verify procfs exposes this exact inode; never fall back to the pathname.
+        descriptor_path = f"/proc/self/fd/{fd}"
+        proc_info = os.stat(descriptor_path)
+        if (proc_info.st_dev, proc_info.st_ino) != (info.st_dev, info.st_ino):
+            raise OSError("Descriptor filesystem unavailable")
+        super().__init__(descriptor_path, filename=filename, stat_result=info)
+        self._document_fd = fd
+
+    async def __call__(self, scope, receive, send):
+        try:
+            # A pathsend implementation might reopen the path after we close the
+            # descriptor. Force Starlette to read while the descriptor is held.
+            scope = dict(scope)
+            scope["extensions"] = {key: value for key, value in scope.get("extensions", {}).items()
+                                   if key != "http.response.pathsend"}
+            await super().__call__(scope, receive, send)
+        finally:
+            os.close(self._document_fd)
+
+
 @app.get("/api/documents/{filename}/download")
 async def download_document(filename: str):
-    """Download a generated document."""
-    from starlette.responses import FileResponse
-    
-    file_path_local = os.path.join(_DOCS_OUT, filename)
-    file_path_agent = os.path.join(os.path.expanduser("~"), ".caiocore", "workspace", "out", filename)
-    
-    target_path = file_path_local if os.path.exists(file_path_local) else file_path_agent
-    
-    if not os.path.exists(target_path):
-        raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(target_path, filename=filename)
+    """Download a generated document via a verified open descriptor."""
+    import errno
+
+    if not _document_secure_open_supported():
+        raise HTTPException(status_code=503, detail="Secure document download unavailable")
+
+    directories = (_DOCS_OUT, os.path.join(os.path.expanduser("~"), ".caiocore", "workspace", "out"))
+    for directory in directories:
+        try:
+            fd, info = _open_document(directory, filename)
+        except OSError as exc:
+            # Only a genuinely missing local path permits the original fallback.
+            # Symlinks, hardlinks, invalid names, and access errors fail closed.
+            if exc.errno == errno.ENOENT:
+                continue
+            raise HTTPException(status_code=404, detail="File not found") from exc
+        try:
+            return _DocumentDownloadResponse(fd, info, filename)
+        except OSError as exc:
+            os.close(fd)
+            raise HTTPException(status_code=503, detail="Secure document download unavailable") from exc
+        except BaseException:
+            os.close(fd)
+            raise
+    raise HTTPException(status_code=404, detail="File not found")
 
 
 @app.delete("/api/documents/{filename}")
@@ -917,12 +961,13 @@ async def send_notification(req: NotificationRequest):
             logger.info(f"API: Telegram notification sent: {req.title}")
             return {"status": "sent", "chat_id": target_chat_id}
         else:
-            detail = resp_data.get("description", resp.text)
-            logger.error(f"API: Telegram error: {detail}")
-            raise HTTPException(status_code=502, detail=f"Telegram API error: {detail}")
-    except httpx.HTTPError as e:
-        logger.exception(f"API: HTTP error sending notification: {e}")
-        raise HTTPException(status_code=502, detail=str(e))
+            # Remote error text is untrusted and can contain sensitive data.
+            logger.error("API: Telegram rejected notification")
+            raise HTTPException(status_code=502, detail="Telegram notification failed")
+    except httpx.HTTPError:
+        # HTTP exceptions can contain the Telegram URL, including the token.
+        logger.error("API: HTTP error sending notification")
+        raise HTTPException(status_code=502, detail="Telegram notification failed") from None
 
 
 # ── Agent initialization ────────────────────────────────────────────
@@ -1015,177 +1060,272 @@ async def on_startup():
         except Exception as e:
             logger.error(f"Startup: Final agent loop initialization failed: {e}")
 
+    await asyncio.to_thread(_start_local_text_worker)
     asyncio.create_task(run_init())
 
 
-# ── Tasks API ────────────────────────────────────────────────────────
+@app.on_event("shutdown")
+async def on_shutdown_local_text_worker():
+    global _local_text_worker
+    worker, _local_text_worker = _local_text_worker, None
+    if worker is not None:
+        await asyncio.to_thread(worker.stop)
 
-import uuid as _uuid
 
-# In-memory task store — primary source of truth within a gateway session
-# Loaded from disk on first access, persisted to disk on every write
-_tasks_store: list | None = None
+# Legacy task endpoints are disabled: they shared unowned data, could execute
+# arbitrary agent work and could report success after persistence failure.
+@app.api_route('/api/tasks', methods=['GET', 'POST'])
+@app.api_route('/api/tasks/{task_id}', methods=['DELETE'])
+@app.api_route('/api/tasks/{task_id}/execute', methods=['POST'])
+def legacy_tasks_disabled(task_id: str = ''):
+    raise HTTPException(status_code=503, detail='Legacy task API disabled')
 
-def _tasks_json_path() -> str:
-    """Compute tasks.json path fresh each time — no caching to avoid stale paths."""
-    # Priority 1: use workspace from config (set in start_api)
-    if _config and hasattr(_config, 'workspace_path'):
-        return str(_config.workspace_path / "tasks.json")
-    # Priority 2: project root next to config.json
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    return os.path.join(project_root, "tasks.json")
 
-def _load_tasks() -> list:
-    """Load tasks from in-memory store, initializing from disk if needed."""
-    global _tasks_store
-    if _tasks_store is not None:
-        return list(_tasks_store)
-    # Initialize from disk
-    path = _tasks_json_path()
-    logger.info("Tasks: initializing from {}", path)
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    _tasks_store = data
-                    logger.info("Tasks: loaded {} tasks from disk", len(_tasks_store))
-                    return list(_tasks_store)
-        except Exception as e:
-            logger.error("Tasks: failed to load from {}: {}", path, e)
-    _tasks_store = []
-    return []
+# Deliberately one local operator, NOT an authenticated chat/user identity.
+# It is only set by the gateway's own loopback-bound server entrypoint.
+_local_queue_server_loopback = False
+_LOCAL_QUEUE_OWNER = 'local_operator'
+_local_text_worker = None
 
-def _save_tasks(tasks: list) -> None:
-    """Save tasks to in-memory store and persist to disk."""
-    global _tasks_store
-    _tasks_store = list(tasks)
-    path = _tasks_json_path()
+
+def _start_local_text_worker():
+    """One opt-in worker, only in the same loopback gateway trust boundary."""
+    global _local_text_worker
+    if os.getenv('CAIO_LOCAL_TEXT_WORKER_ENABLED') != '1':
+        return
+    token = os.getenv('CAIO_API_TOKEN', '')
+    path = os.getenv('CAIO_LOCAL_QUEUE_DIR', '')
+    if (os.getenv('CAIO_LOCAL_QUEUE_ENABLED') != '1' or not _local_queue_server_loopback
+            or len(token) < 32 or not token.isascii() or any(c.isspace() for c in token)
+            or not path or not os.path.isabs(path)):
+        logger.error('Local text worker not started: unsafe or incomplete configuration')
+        return
     try:
-        parent = os.path.dirname(path)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(tasks, f, ensure_ascii=False, indent=2)
-        logger.info("Tasks: saved {} tasks to {}", len(tasks), path)
-    except Exception as e:
-        logger.error("Tasks: FAILED to persist to {}: {}", path, e)
-        # In-memory store still updated — tasks survive this session but not restarts
-
-class TaskCreate(BaseModel):
-    title: str
-    description: str = ""
-    assignedTo: str = ""
-    priority: str = "medium"
+        from caiocore.task_queue import Queue
+        from caiocore.task_queue.worker import LocalTextWorker
+        worker = LocalTextWorker(Queue(path, _LOCAL_QUEUE_OWNER))
+        worker.start()
+        _local_text_worker = worker
+    except Exception:
+        # Do not disclose paths or contents and do not start a second worker.
+        logger.error('Local text worker not started: storage or exclusive lock unavailable')
 
 
-@app.get("/api/tasks")
-async def get_tasks():
-    return _load_tasks()
+
+class LocalQueueCreate(BaseModel):
+    model_config = {'extra': 'forbid'}
+    description: StrictStr
+    priority: StrictInt = 0
 
 
-@app.post("/api/tasks", status_code=201)
-async def create_task(body: TaskCreate):
-    task = {
-        "id": f"TASK-{_uuid.uuid4().hex[:6].upper()}",
-        "title": body.title,
-        "description": body.description,
-        "assignedTo": body.assignedTo,
-        "priority": body.priority,
-        "status": "pending",
-        "progress": 0,
-        "createdAt": datetime.now().isoformat(),
-        "completedAt": None,
-        "duration": None,
-        "result": None,
-    }
-    tasks = _load_tasks()
-    tasks.insert(0, task)
-    _save_tasks(tasks)
-    logger.info("Task created: {} ({})", task["title"], task["id"])
-    return task
+class LocalTextStatisticsCreate(BaseModel):
+    model_config = {'extra': 'forbid'}
+    text: StrictStr
+    consent: StrictBool
+    priority: StrictInt = 0
 
 
-@app.post("/api/tasks/{task_id}/execute")
-async def execute_task(task_id: str, background_tasks: BackgroundTasks):
-    tasks = _load_tasks()
-    task = next((t for t in tasks if t["id"] == task_id), None)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    if task["status"] == "running":
-        return {"status": "already_running"}
+def _queue_for_local_operator(request: Request, response: Response):
+    from caiocore.server.security import _hostname, _origin, _loopback, _secret_matches
+    from caiocore.task_queue import Queue, StorageSecurityError
+    import sqlite3
 
-    # Mark as running
-    task["status"] = "running"
-    task["progress"] = 5
-    _save_tasks(tasks)
-
-    async def _run_task():
-        start = datetime.now()
-        assigned = task.get('assignedTo', '')
-        specialist_line = ""
-        if assigned:
-            specialist_line = f"\nESPECIALISTA ATRIBUÍDO: {assigned}\nDirecione esta tarefa ao {assigned} usando as ferramentas dele.\n"
-        prompt = (
-            f"TAREFA ATRIBUÍDA: {task['title']}\n"
-            f"Descrição: {task['description'] or 'Sem descrição adicional'}\n"
-            f"Prioridade: {task['priority']}\n"
-            f"{specialist_line}\n"
-            "Execute esta tarefa usando todas as ferramentas disponíveis. "
-            "Seja direto e objetivo. Ao concluir, informe o resultado. "
-            "Notifique o usuário tanto no Telegram quanto no chat do Dashboard."
-        )
-
-        try:
-            response = await _agent.process_direct(
-                prompt,
-                session_key=f"task:{task_id}",
-                channel="dashboard",
-                chat_id="dashboard-default",
-            )
-            duration_s = (datetime.now() - start).total_seconds()
-            task["status"] = "completed"
-            task["progress"] = 100
-            task["completedAt"] = datetime.now().isoformat()
-            task["duration"] = f"{duration_s:.0f}s"
-            task["result"] = (response or "")[:500]
-        except Exception as e:
-            task["status"] = "failed"
-            task["progress"] = 0
-            task["result"] = str(e)[:200]
-        # Atomic save: reload full list, update only this task, save back
-        current = _load_tasks()
-        found = False
-        for t in current:
-            if t["id"] == task_id:
-                t["status"] = task["status"]
-                t["progress"] = task["progress"]
-                t["completedAt"] = task.get("completedAt")
-                t["duration"] = task.get("duration")
-                t["result"] = task.get("result")
-                found = True
-                break
-        if found and current:
-            _save_tasks(current)  # Never saves empty list
-        else:
-            logger.warning("Task {} not found in list after execution — skipping save", task_id)
-
-    if _agent:
-        background_tasks.add_task(_run_task)
-    return {"status": "started", "task_id": task_id}
+    response.headers['Cache-Control'] = 'no-store'
+    if any(key.lower() == 'owner' for key in request.query_params):
+        raise HTTPException(422, 'Client owner is not accepted')
+    if os.getenv('CAIO_LOCAL_QUEUE_ENABLED') != '1' or not _local_queue_server_loopback:
+        raise HTTPException(503, 'Local queue disabled')
+    token = os.getenv('CAIO_API_TOKEN', '')
+    if len(token) < 32 or not token.isascii() or any(c.isspace() for c in token):
+        raise HTTPException(503, 'Local queue not configured')
+    scope = request.scope
+    headers = request.headers
+    auth = headers.get('authorization', '')
+    if not auth.startswith('Bearer ') or not _secret_matches(token, auth[7:]):
+        raise HTTPException(401, 'Access denied')
+    peer = (scope.get('client') or ('', 0))[0]
+    server = (scope.get('server') or ('', 0))[0]
+    host = _hostname(headers.get('host', ''))
+    forwarded = {'forwarded', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'x-forwarded-port', 'x-real-ip'}
+    if (not _loopback(peer) or not _loopback(server)
+            or host not in {'localhost', '127.0.0.1', '::1'}
+            or any(name in headers for name in forwarded)):
+        raise HTTPException(403, 'Access denied')
+    origin = headers.get('origin')
+    if origin is not None and (_origin(origin) is None or _origin(origin) != _origin(f"{scope.get('scheme', 'http')}://{headers.get('host', '')}")):
+        raise HTTPException(403, 'Access denied')
+    path = os.getenv('CAIO_LOCAL_QUEUE_DIR', '')
+    if not path or not os.path.isabs(path):
+        raise HTTPException(503, 'Local queue not configured')
+    try:
+        return Queue(path, _LOCAL_QUEUE_OWNER)
+    except (StorageSecurityError, OSError, sqlite3.Error, ValueError):
+        raise HTTPException(503, 'Local queue storage unavailable') from None
 
 
-@app.delete("/api/tasks/{task_id}")
-async def delete_task(task_id: str):
-    tasks = _load_tasks()
-    new_tasks = [t for t in tasks if t["id"] != task_id]
-    if len(new_tasks) == len(tasks):
-        raise HTTPException(status_code=404, detail="Task not found")
-    _save_tasks(new_tasks)
-    return {"deleted": True}
+def _queue_call(func, *args, **kwargs):
+    from caiocore.task_queue import InvalidTransition, StorageSecurityError
+    import sqlite3
+    try:
+        return func(*args, **kwargs)
+    except InvalidTransition:
+        raise HTTPException(409, 'Task unavailable') from None
+    except ValueError:
+        raise HTTPException(422, 'Invalid task data') from None
+    except (StorageSecurityError, OSError, sqlite3.Error):
+        raise HTTPException(503, 'Local queue storage unavailable') from None
+
+
+def _local_public(task):
+    if task is None:
+        return None
+    return {k: v for k, v in task.items() if k != 'owner'}
+
+
+@app.get('/api/local-queue/tasks')
+def local_queue_list(status: Optional[str] = None, limit: int = 100, offset: int = 0,
+                     queue = Depends(_queue_for_local_operator)):
+    return [_local_public(x) for x in _queue_call(queue.list, status=status, limit=limit, offset=offset)]
+
+
+@app.post('/api/local-queue/tasks', status_code=201)
+def local_queue_create(body: LocalQueueCreate, queue = Depends(_queue_for_local_operator)):
+    return _local_public(_queue_call(queue.create, body.description, body.priority))
+
+
+@app.get('/api/local-queue/worker')
+def local_queue_worker_status(queue = Depends(_queue_for_local_operator)):
+    worker = _local_text_worker
+    active = bool(worker and worker.running and worker.queue.directory == queue.directory)
+    return {'running': active, 'kind': 'estatisticas_texto_local_v1',
+            'error': worker.error if worker else None}
+
+
+@app.post('/api/local-queue/text-statistics', status_code=201)
+def local_queue_text_statistics(body: LocalTextStatisticsCreate, queue = Depends(_queue_for_local_operator)):
+    if body.consent is not True:
+        raise HTTPException(422, 'Explicit consent required')
+    worker = _local_text_worker
+    if (os.getenv('CAIO_LOCAL_TEXT_WORKER_ENABLED') != '1' or not worker
+            or not worker.running or worker.queue.directory != queue.directory):
+        raise HTTPException(503, 'Local text worker unavailable')
+    return _local_public(_queue_call(queue.create_text_stats, body.text, body.priority, consent=True))
+
+
+def _chat_queue_boundary(request: Request):
+    # Do not accept the dashboard's bearer-injecting proxy or browser requests:
+    # its unauthenticated session and proxy identity cannot prove the operator.
+    if os.getenv('CAIO_LOCAL_CHAT_QUEUE_ENABLED') != '1':
+        raise HTTPException(503, 'Local chat queue disabled')
+    from caiocore.server.security import _secret_matches
+    key = os.getenv('CAIO_LOCAL_CHAT_QUEUE_KEY', '')
+    if (len(key) < 32 or not key.isascii() or any(c.isspace() for c in key)
+            or _secret_matches(key, os.getenv('CAIO_API_TOKEN', ''))):
+        raise HTTPException(503, 'Local chat queue not configured')
+    supplied = request.headers.getlist('x-caio-local-chat-key')
+    if len(supplied) != 1 or not _secret_matches(key, supplied[0]):
+        raise HTTPException(401, 'Access denied')
+    if request.query_params or request.headers.get('origin') is not None or request.headers.get('cookie') is not None:
+        raise HTTPException(403, 'Direct local client required')
+    if any(k.lower().startswith('sec-fetch-') for k in request.headers):
+        raise HTTPException(403, 'Direct local client required')
+
+
+def _unique_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError('duplicate key')
+        result[key] = value
+    return result
+
+
+@app.post('/api/chat/local-text-statistics')
+async def chat_queue_text(request: Request, response: Response, queue=Depends(_queue_for_local_operator)):
+    """Explicit local chat action; never calls the agent or trusts session IDs."""
+    _chat_queue_boundary(request)
+    if request.headers.get('content-type', '').lower() != 'application/json':
+        raise HTTPException(415, 'JSON required')
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw.extend(chunk)
+        if len(raw) > 20000:
+            raise HTTPException(413, 'Request too large')
+    try:
+        body = json.loads(raw, object_pairs_hook=_unique_json_object)
+        if not isinstance(body, dict) or set(body) - {'request_id', 'text', 'consent', 'priority'}:
+            raise ValueError()
+        if set(body) < {'request_id', 'text', 'consent'}:
+            raise ValueError()
+        if type(body['request_id']) is not str or type(body['text']) is not str or body['consent'] is not True:
+            raise ValueError()
+        priority = body.get('priority', 0)
+        if type(priority) is not int:
+            raise ValueError()
+    except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
+        raise HTTPException(422, 'Invalid task data') from None
+    worker = _local_text_worker
+    if (os.getenv('CAIO_LOCAL_TEXT_WORKER_ENABLED') != '1' or not worker
+            or not worker.running or worker.queue.directory != queue.directory):
+        raise HTTPException(503, 'Local text worker unavailable')
+    from starlette.concurrency import run_in_threadpool
+    task, created = await run_in_threadpool(_queue_call, queue.create_chat_text_stats,
+                                            body['request_id'], body['text'], priority, consent=True)
+    response.status_code = 201 if created else 200
+    return {'created': created, 'task': _local_public(task)}
+
+
+@app.get('/api/chat/local-text-statistics/{task_id}')
+def chat_queue_get(task_id: str, request: Request, queue=Depends(_queue_for_local_operator)):
+    _chat_queue_boundary(request)
+    task = _queue_call(queue.get, task_id)
+    if task is None or task['kind'] != 'estatisticas_texto_local_v1':
+        raise HTTPException(404, 'Task unavailable')
+    return {'task': _local_public(task)}
+
+
+@app.get('/api/local-queue/tasks/{task_id}')
+def local_queue_get(task_id: str, queue = Depends(_queue_for_local_operator)):
+    task = _queue_call(queue.get, task_id)
+    if task is None:
+        raise HTTPException(404, 'Task unavailable')
+    return _local_public(task)
+
+
+@app.post('/api/local-queue/tasks/{task_id}/cancel')
+async def local_queue_cancel(task_id: str, request: Request, queue = Depends(_queue_for_local_operator)):
+    if await request.body():
+        raise HTTPException(422, 'Cancel does not accept a body')
+    # SQLite may block on its transaction; do not block the event loop.
+    from starlette.concurrency import run_in_threadpool
+    return _local_public(await run_in_threadpool(_queue_call, queue.cancel_waiting, task_id))
+
+
+@app.get('/api/local-queue/audit')
+def local_queue_audit(limit: int = 100, after: int = 0, queue = Depends(_queue_for_local_operator)):
+    return _queue_call(queue.audit, limit=limit, after=after)
 
 
 # ── Settings API ─────────────────────────────────────────────────────
+
+# Masked values are display-only. Empty/masked submissions do not clear secrets.
+_SECRET_MASK = "********"
+
+def _mask_secret(value):
+    return _SECRET_MASK if value else ""
+
+def _mask_sensitive_url(value):
+    # Credentials can appear anywhere, including paths and hostnames.
+    return _mask_secret(value)
+
+
+def _new_secret(value):
+    if value is None or not value.strip():
+        return False
+    stripped = value.strip()
+    # Support common password widgets without echoing partial secrets.
+    return not all(c in "*•●·" for c in stripped) and stripped.lower() not in {"[redacted]", "<redacted>", "[secret]"}
+
 
 @app.get("/api/settings")
 async def get_settings():
@@ -1224,32 +1364,32 @@ async def get_settings():
         "emailEnabled": safe_get(_config, "channels.email.enabled", False),
         "whatsappEnabled": safe_get(_config, "channels.evolution.enabled", False),
         
-        "telegramToken": safe_get(_config, "channels.telegram.token", ""),
+        "telegramToken": _mask_secret(safe_get(_config, "channels.telegram.token", "")),
         "telegramAllowList": ",".join(safe_get(_config, "channels.telegram.allow_from", [])),
         "telegramNotifyChatId": safe_get(_config, "channels.telegram.notify_chat_id", ""),
         
         "emailUser": safe_get(_config, "channels.email.imap_username", ""),
-        "emailPass": safe_get(_config, "channels.email.imap_password", ""),
+        "emailPass": _mask_secret(safe_get(_config, "channels.email.imap_password", "")),
         "smtpHost": safe_get(_config, "channels.email.smtp_host", ""),
         "smtpPort": safe_get(_config, "channels.email.smtp_port", 587),
 
-        "evolutionBaseUrl": safe_get(_config, "channels.evolution.base_url", ""),
-        "evolutionApiKey": safe_get(_config, "channels.evolution.api_key", ""),
+        "evolutionBaseUrl": _mask_sensitive_url(safe_get(_config, "channels.evolution.base_url", "")),
+        "evolutionApiKey": _mask_secret(safe_get(_config, "channels.evolution.api_key", "")),
         "evolutionInstance": safe_get(_config, "channels.evolution.instance_name", ""),
         
         "providerKeys": {
-            "openrouter": safe_get(_config, "providers.openrouter.api_key", ""),
-            "gemini": safe_get(_config, "providers.gemini.api_key", ""),
-            "groq": safe_get(_config, "providers.groq.api_key", ""),
-            "openai": safe_get(_config, "providers.openai.api_key", ""),
-            "anthropic": safe_get(_config, "providers.anthropic.api_key", ""),
-            "deepseek": safe_get(_config, "providers.deepseek.api_key", ""),
-            "custom": safe_get(_config, "providers.custom.api_key", ""),
-            "omniroute": safe_get(_config, "providers.omniroute.api_key", ""),
+            "openrouter": _mask_secret(safe_get(_config, "providers.openrouter.api_key", "")),
+            "gemini": _mask_secret(safe_get(_config, "providers.gemini.api_key", "")),
+            "groq": _mask_secret(safe_get(_config, "providers.groq.api_key", "")),
+            "openai": _mask_secret(safe_get(_config, "providers.openai.api_key", "")),
+            "anthropic": _mask_secret(safe_get(_config, "providers.anthropic.api_key", "")),
+            "deepseek": _mask_secret(safe_get(_config, "providers.deepseek.api_key", "")),
+            "custom": _mask_secret(safe_get(_config, "providers.custom.api_key", "")),
+            "omniroute": _mask_secret(safe_get(_config, "providers.omniroute.api_key", "")),
         },
         "providerBases": {
-            "custom": safe_get(_config, "providers.custom.api_base", ""),
-            "omniroute": safe_get(_config, "providers.omniroute.api_base", ""),
+            "custom": _mask_sensitive_url(safe_get(_config, "providers.custom.api_base", "")),
+            "omniroute": _mask_sensitive_url(safe_get(_config, "providers.omniroute.api_base", "")),
         },
         "providerEnabled": {
             "openrouter": safe_get(_config, "providers.openrouter.enabled", True),
@@ -1262,10 +1402,10 @@ async def get_settings():
             "omniroute": safe_get(_config, "providers.omniroute.enabled", True),
         },
         "omnirouteCombo": safe_get(_config, "providers.omniroute.extra_headers", {}).get("X-Combo-Id", "") if safe_get(_config, "providers.omniroute.extra_headers") else "",
-        "searchEngineId": safe_get(_config, "tools.web.search.api_key", ""),
+        "searchEngineId": _mask_secret(safe_get(_config, "tools.web.search.api_key", "")),
         "searchProvider": safe_get(_config, "tools.web.search.provider", "brave"),
-        "braveKey": safe_get(_config, "tools.web.search.api_key", ""),
-        "tavilyKey": safe_get(_config, "tools.web.search.tavily_key", ""),
+        "braveKey": _mask_secret(safe_get(_config, "tools.web.search.api_key", "")),
+        "tavilyKey": _mask_secret(safe_get(_config, "tools.web.search.tavily_key", "")),
     }
 
 
@@ -1278,6 +1418,16 @@ async def update_settings(data: SettingsUpdate):
     if not _config:
         raise HTTPException(status_code=500, detail="Config not loaded")
     
+    # OpenCode secrets are server-only. Model/provider changes require restart:
+    # this endpoint cannot safely swap an active provider in a running agent.
+    if (data.providerKeys and "opencode" in data.providerKeys) or (data.providerBases and "opencode" in data.providerBases):
+        raise HTTPException(status_code=400, detail="OpenCode: chave apenas no ambiente do servidor e endpoint fixo.")
+    current_model = _config.agents.defaults.model
+    if data.model is not None and data.model != current_model and (data.model.startswith("opencode/") or current_model.startswith("opencode/")):
+        raise HTTPException(status_code=409, detail="Para alterar o modelo OpenCode, configure no servidor e reinicie o agente.")
+    if data.providerEnabled and "opencode" in data.providerEnabled:
+        raise HTTPException(status_code=409, detail="Configure OpenCode no servidor e reinicie o agente.")
+
     orig_telegram = _config.channels.telegram.enabled
     orig_email = _config.channels.email.enabled
     orig_whatsapp = _config.channels.evolution.enabled
@@ -1296,7 +1446,7 @@ async def update_settings(data: SettingsUpdate):
     if data.whatsappEnabled is not None: _config.channels.evolution.enabled = data.whatsappEnabled
 
     # Channel Details
-    if data.telegramToken is not None: _config.channels.telegram.token = data.telegramToken
+    if _new_secret(data.telegramToken): _config.channels.telegram.token = data.telegramToken
     if data.telegramAllowList is not None:
         _config.channels.telegram.allow_from = [x.strip() for x in data.telegramAllowList.split(",") if x.strip()]
     if data.telegramNotifyChatId is not None:
@@ -1306,25 +1456,25 @@ async def update_settings(data: SettingsUpdate):
         _config.channels.email.imap_username = data.emailUser
         _config.channels.email.smtp_username = data.emailUser
         _config.channels.email.from_address = data.emailUser
-    if data.emailPass is not None:
+    if _new_secret(data.emailPass):
         _config.channels.email.imap_password = data.emailPass
         _config.channels.email.smtp_password = data.emailPass
     if data.smtpHost is not None: _config.channels.email.smtp_host = data.smtpHost
     if data.smtpPort is not None: _config.channels.email.smtp_port = data.smtpPort
 
-    if data.evolutionBaseUrl is not None: _config.channels.evolution.base_url = data.evolutionBaseUrl
-    if data.evolutionApiKey is not None: _config.channels.evolution.api_key = data.evolutionApiKey
+    if data.evolutionBaseUrl is not None and data.evolutionBaseUrl != _SECRET_MASK: _config.channels.evolution.base_url = data.evolutionBaseUrl
+    if _new_secret(data.evolutionApiKey): _config.channels.evolution.api_key = data.evolutionApiKey
     if data.evolutionInstance is not None: _config.channels.evolution.instance_name = data.evolutionInstance
 
     # Provider Settings
     if data.providerKeys:
         for p, key in data.providerKeys.items():
-            if hasattr(_config.providers, p):
+            if hasattr(_config.providers, p) and _new_secret(key):
                 getattr(_config.providers, p).api_key = key
 
     if data.providerBases:
         for p, base in data.providerBases.items():
-            if hasattr(_config.providers, p):
+            if hasattr(_config.providers, p) and base != _SECRET_MASK:
                 getattr(_config.providers, p).api_base = base if base else None
 
     if data.providerEnabled:
@@ -1342,8 +1492,8 @@ async def update_settings(data: SettingsUpdate):
 
     # Search Tools
     if data.searchProvider is not None: _config.tools.web.search.provider = data.searchProvider
-    if data.braveKey is not None: _config.tools.web.search.api_key = data.braveKey
-    if data.tavilyKey is not None: _config.tools.web.search.tavily_key = data.tavilyKey
+    if _new_secret(data.braveKey): _config.tools.web.search.api_key = data.braveKey
+    if _new_secret(data.tavilyKey): _config.tools.web.search.tavily_key = data.tavilyKey
 
     # Persist to config.json
     from caiocore.config.loader import save_config
@@ -1446,9 +1596,12 @@ async def setup_google_credentials(req: GoogleCredsRequest):
         state_path.write_text(json.dumps({"state": state}), encoding="utf-8")
         
         return {"status": "ok", "auth_url": auth_url, "message": "Credencial válida. Autorize no Google."}
-    except Exception as e:
-        logger.error(f"Erro em setup_google_credentials: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception:
+        # OAuth exceptions may contain client secrets or authorization codes.
+        logger.error("Google credential setup failed")
+        raise HTTPException(status_code=500, detail="Google credential setup failed") from None
 
 class GoogleConfirmRequest(BaseModel):
     response_url: str
@@ -1501,17 +1654,14 @@ async def confirm_google_oauth(req: GoogleConfirmRequest):
             save_config(_config)
             
         return {"status": "success", "message": "Google Calendar configurado com sucesso!"}
+    except HTTPException:
+        raise
     except Exception as e:
-        import traceback
-        erro_trace = traceback.format_exc()
-        logger.error(f"Erro efetuando fetch_token: {erro_trace}")
-        error_msg = f"{type(e).__name__}: {str(e)}"
-        
-        # Friendly suggestion for common mismatches
-        if "MismatchingStateError" in error_msg:
-            error_msg += " (Você gerou um link novo sem recarregar a janela? O código 'state' mudou. Gere o link DNV, feche a aba antiga, faça login e cole o link NOVO de primeira.)"
-            
-        raise HTTPException(status_code=500, detail=error_msg)
+        # OAuth exception messages and tracebacks can contain secrets.
+        logger.error("Google OAuth confirmation failed")
+        if type(e).__name__ == "MismatchingStateError":
+            raise HTTPException(status_code=400, detail="Estado OAuth inválido; gere um novo link de autorização.") from None
+        raise HTTPException(status_code=500, detail="Google OAuth confirmation failed") from None
 
 class GoogleTokenDirectRequest(BaseModel):
     token_content: str
@@ -1544,9 +1694,11 @@ async def save_google_token_direct(req: GoogleTokenDirectRequest):
             save_config(_config)
             
         return {"status": "success", "message": "Token do Google ativado com sucesso!"}
-    except Exception as e:
-        logger.error(f"Erro em save_google_token_direct: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception:
+        logger.error("Google token setup failed")
+        raise HTTPException(status_code=400, detail="Google token setup failed") from None
 
 
 
@@ -1589,13 +1741,18 @@ def start_api(agent, bus, config, cron, channels=None, doc_agent=None):
     logger.info("Caio API initialized (monitoring agents registered)")
 
 
-async def start_api_server(host="0.0.0.0", port=18790):
+async def start_api_server(host="127.0.0.1", port=18790):
     """
     RUN current FastAPI app in the current event loop.
     This prevents loop conflict errors (504/hangs).
     """
     import uvicorn
-    config = uvicorn.Config(app, host=host, port=port, log_level="info", access_log=False)
+    global _local_queue_server_loopback
+    config = uvicorn.Config(app, host=host, port=port, log_level="info", access_log=False, proxy_headers=False)
     server = uvicorn.Server(config)
     logger.info("Caio API Server starting on port {}...", port)
-    await server.serve()
+    _local_queue_server_loopback = host in {"127.0.0.1", "::1"}
+    try:
+        await server.serve()
+    finally:
+        _local_queue_server_loopback = False

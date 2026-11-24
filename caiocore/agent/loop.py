@@ -30,6 +30,7 @@ from caiocore.agent.tools.workflow import WorkflowTool
 from caiocore.agent.tools.sandbox import SandboxExecTool
 from caiocore.agent.tools.registry import ToolRegistry
 from caiocore.agent.tools.shell import ExecTool
+from caiocore.agent.tools.skill_read import ReadSkillTool, SafeSkillsLoader
 from caiocore.agent.tools.spawn import SpawnTool
 from caiocore.agent.tools.web import WebFetchTool, WebSearchTool
 from caiocore.agent.tools.generator import GeneratorTool
@@ -49,6 +50,21 @@ from caiocore.session.manager import Session, SessionManager
 if TYPE_CHECKING:
     from caiocore.config.schema import Config, ExecToolConfig
     from caiocore.cron.service import CronService
+
+
+class SafeSkillContextBuilder(ContextBuilder):
+    """Keep progressive skill instructions consistent with the restricted tool."""
+
+    def __init__(self, workspace: Path):
+        super().__init__(workspace)
+        self.skills = SafeSkillsLoader(workspace)
+
+    def build_system_prompt(self, skill_names=None, is_specialist=False):
+        prompt = super().build_system_prompt(skill_names, is_specialist)
+        return prompt.replace(
+            "Para usar uma skill, leia seu arquivo SKILL.md usando a tool read_file.",
+            "Para usar uma skill, chame read_skill com o nome da skill, sem caminho."
+        )
 
 
 class AgentLoop:
@@ -109,12 +125,14 @@ class AgentLoop:
             default_model=self.model,
             light_model="meta-llama/llama-3.2-3b-instruct:free",
             heavy_model=self.model,
-            enabled=True,
+            enabled=not getattr(provider, "disable_smart_routing", False),
         )
 
-        self.context = ContextBuilder(workspace)
+        self.context = SafeSkillContextBuilder(workspace)
         self.sessions = session_manager or SessionManager(workspace)
-        self.tools = ToolRegistry()
+        self.tools = ToolRegistry(enable_workspace_file_tools=(
+            bool(config and config.tools.enable_workspace_file_tools)
+        ))
         self.subagents = SubagentManager(
             provider=provider,
             workspace=workspace,
@@ -130,35 +148,35 @@ class AgentLoop:
         self.workflows = WorkflowEngine(self, bus)
 
         self._running = False
-        self._mcp_servers = mcp_servers or {}
+        # Connecting stdio MCP can itself launch arbitrary code; disabled until
+        # there is a trusted execution boundary and per-operation approvals.
+        self._mcp_servers = {}
         self._mcp_stack: AsyncExitStack | None = None
         self._mcp_connected = False
         self._mcp_connecting = False
         self._consolidating: set[str] = set()  # Session keys with consolidation in progress
-        self._register_default_tools()
+        # OpenCode is chat-only until a reviewed sandbox and approvals exist.
+        if not getattr(self.provider, "disable_agent_tools", False):
+            self._register_default_tools()
 
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
 
-        allowed_dir = self.workspace if self.restrict_to_workspace else None
-        for cls in (ReadFileTool, WriteFileTool, EditFileTool, ListDirTool):
-            self.tools.register(cls(workspace=self.workspace, allowed_dir=allowed_dir))
+        # Reads are opt-in only: symlink races and hard links cannot be contained
+        # by Path.resolve(). Writes remain blocked until real approval exists.
+        self.tools.register(ReadSkillTool(workspace=self.workspace))
+        allowed_dir = self.workspace
+        if self.config and self.config.tools.enable_workspace_file_tools:
+            for cls in (ReadFileTool, ListDirTool):
+                self.tools.register(cls(workspace=self.workspace, allowed_dir=allowed_dir))
             
-        try:
-            from caiocore.agent.tools.desktop import DesktopControlTool
-            self.tools.register(DesktopControlTool(workspace=self.workspace))
-        except ImportError:
-            pass
-
-        self.tools.register(ExecTool(
-            working_dir=str(self.workspace),
-            timeout=self.exec_config.timeout,
-            restrict_to_workspace=self.restrict_to_workspace,
-        ))
-        self.tools.register(SandboxExecTool(workspace=self.workspace))
+        # Do not instantiate the blocked desktop tool: its constructor disables
+        # PyAutoGUI's global failsafe and can fail on headless systems.
+        # Shell and Docker are not a security boundary; do not register them.
         
         # Initialize WebSearchTool with provider-specific keys
-        web_config = self.config.tools.web.search
+        from caiocore.config.schema import Config
+        web_config = (self.config or Config()).tools.web.search
         self.tools.register(WebSearchTool(
             provider=web_config.provider,
             brave_key=web_config.api_key,
@@ -188,7 +206,7 @@ class AgentLoop:
         self.tools.register(WeatherTool())
 
         # Register PDF Reader Tool
-        self.tools.register(ReadPDFTool(workspace=self.workspace, allowed_dir=allowed_dir))
+        # PDF path checks are not race-safe; do not expose by default.
 
         # Register Browser Control Tool (requires selenium)
         try:
@@ -406,12 +424,21 @@ class AgentLoop:
             )
             
             if not response or response.finish_reason == "error":
+                from caiocore.providers.opencode_provider import OpenCodeProvider
+                if isinstance(self.provider, OpenCodeProvider):
+                    from caiocore.providers.base import ProviderCallError
+                    # OpenCodeProvider emits only redacted fixed messages/status codes.
+                    raise ProviderCallError(response.content if response else "OpenCode: falha na chamada.")
                 final_content = response.content if response else "Fatal: LLM invocation failed."
                 logger.error(final_content)
                 break
             
-            # Robustness improvement: if no structured tool calls, try extracting from text
-            if not response.has_tool_calls and response.content:
+            if getattr(self.provider, "disable_agent_tools", False) and response.has_tool_calls:
+                from caiocore.providers.base import ProviderCallError
+                raise ProviderCallError("OpenCode: ferramentas indisponíveis neste modo.")
+
+            # Never interpret arbitrary text as a tool call in chat-only mode.
+            if not getattr(self.provider, "disable_agent_tools", False) and not response.has_tool_calls and response.content:
                 extracted = self._try_extract_tool_calls(response.content)
                 if extracted:
                     logger.info("Extracted {} tool calls from text content", len(extracted))
@@ -486,20 +513,11 @@ class AgentLoop:
                         )
                         logger.warning("Tool {} BLOCKED for specialist (allowed: {})", tool_call.name, allowed_tools)
                     else:
-                        is_autonomous = getattr(self.config.agents.defaults, "autonomous", True) if self.config else True
-                        requires_app = False if is_autonomous else (getattr(tool_obj, "requires_approval", False) if tool_obj else False)
-
-                        user_just_approved = False
-                        if session:
-                            user_just_approved = session.metadata.get("user_just_approved", False)
-
-                        if requires_app and not user_just_approved:
-                            logger.info("Tool {} requires approval. Blocking execution...", tool_call.name)
-                            result = f"⛔ EXECUÇÃO PAUSADA: A ação '{tool_call.name}' é crítica. Você DEVE perguntar ao usuário: 'Posso proceder com esta ação? (Sim/Não)'. A ferramenta NÃO foi executada ainda."
-                        else:
-                            await self.tracer.log_thought(session_id, agent_id, step="tool_call", content=f"Executando ferramenta: {tool_call.name}", metadata={"args": tool_call.arguments})
-                            result = await self.tools.execute(tool_call.name, tool_call.arguments)
-                            await self.tracer.log_thought(session_id, agent_id, step="tool_result", content=f"Ferramenta {tool_call.name} retornou resultado.", metadata={"result_preview": str(result)[:200]})
+                        # Registry enforces the same policy for main agent,
+                        # workflows and subagents. No chat-wide approval flag.
+                        await self.tracer.log_thought(session_id, agent_id, step="tool_call", content=f"Solicitando ferramenta: {tool_call.name}", metadata={"args": tool_call.arguments})
+                        result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                        await self.tracer.log_thought(session_id, agent_id, step="tool_result", content=f"Ferramenta {tool_call.name} retornou resultado.", metadata={"result_preview": str(result)[:200]})
                     
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
@@ -581,13 +599,8 @@ class AgentLoop:
         if not isinstance(msg.content, str):
             msg.content = str(msg.content)
             
-        lower_msg = msg.content.strip().lower()
-        # Se for uma confirmação (adicionar flexibilidade se ele explicou que autoriza)
-        if lower_msg in ["sim", "yes", "aprovar", "pode", "y", "confirmo", "autorizo", "pode fazer", "pode executar", "ok", "autorizado"]:
-            session.metadata["user_just_approved"] = True
-            logger.info("Approval flag SET for session {}", key)
-        else:
-            session.metadata["user_just_approved"] = False
+        # Discard any legacy reusable approval stored in existing sessions.
+        session.metadata.pop("user_just_approved", None)
         
         # Tracing context setup
         start_time = time.time()
@@ -654,6 +667,10 @@ class AgentLoop:
 
         if cmd_name == "/model":
             if cmd_arg:
+                from caiocore.providers.opencode_provider import OpenCodeProvider
+                if isinstance(self.provider, OpenCodeProvider) or cmd_arg.strip().startswith("opencode/"):
+                    return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
+                        content="Para alterar o modelo OpenCode, configure no servidor e reinicie o agente.")
                 old_model = self.model
                 self.model = cmd_arg.strip()
                 self.smart_router.default_model = self.model
@@ -688,6 +705,9 @@ class AgentLoop:
                 return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
                     content="❌ Smart Routing desativado. Todas as mensagens usarão o modelo padrão.")
             elif cmd_arg == "on":
+                if getattr(self.provider, "disable_smart_routing", False):
+                    return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
+                        content="Roteamento automático indisponível para este provedor.")
                 self.smart_router.enabled = True
                 return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
                     content="✅ Smart Routing ativado.")
@@ -888,7 +908,7 @@ class AgentLoop:
         """Tenta o modelo principal, depois os fallbacks em ordem."""
         from caiocore.providers.base import LLMResponse
         
-        models_to_try = [model] + (self.fallback_models or [])
+        models_to_try = [model] + ([] if getattr(self.provider, "disable_automatic_fallback", False) else (self.fallback_models or []))
         last_error_response = None
         
         for attempt, current_model in enumerate(models_to_try):

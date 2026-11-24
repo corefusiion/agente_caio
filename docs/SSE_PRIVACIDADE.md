@@ -1,0 +1,9 @@
+# Stream de progresso: bloqueado por privacidade
+
+`GET /api/tracing/stream` está desativado incondicionalmente e retorna HTTP 503 com `Cache-Control: no-store`, sem abrir stream nem registrar assinante. A autenticação e as demais verificações existentes continuam sendo executadas primeiro; uma requisição sem credenciais adequadas pode receber 401/403. Isso também vale por trás do proxy local. O chat continua disponível, mas não há etapas ao vivo pelo SSE.
+
+Motivo: o broadcaster atual distribui eventos brutos globais entre todos os assinantes. O token de API é compartilhado e não prova que quem requisita é dono de uma sessão de chat; `session_id` informado pelo cliente, isolamento no navegador ou filtrar só por ID não resolvem autorização. Eventos incluem conteúdo, argumentos, resultados, prévias de prompts e respostas, inclusive de outros canais. Não existe chave de configuração para reativar esse stream.
+
+Antes de habilitar uma alternativa: criar identidade/autorização reais por sessão e por requisição, vincular a execução ao assinante de forma confiável, negar conexões sem vínculo e publicar apenas estados/etapas definidos por allowlist com valores seguros, nunca conteúdo nem campos livres. Testar sessões simultâneas, canais, tentativas de acesso não autorizadas e dados sensíveis na resposta efetiva, inclusive via proxy. O navegador não é fronteira de segurança. Apenas esse endpoint foi bloqueado: **não** se conclui que o projeto inteiro tenha isolamento ou privacidade de sessões.
+
+Limitação importante fora desta correção de SSE: `/api/tracing` ainda lê histórico global de traces com prévias de prompt/resposta, e `AgentTracer` continua gravando traces e pensamentos brutos em arquivos locais. Eles precisam de uma auditoria e correção próprias antes de compartilhar o acesso à API ou considerar os logs seguros. Não colocar segredos em testes ou assumir que apenas desativar SSE protege esses caminhos.

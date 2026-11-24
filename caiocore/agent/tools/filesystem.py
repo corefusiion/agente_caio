@@ -13,7 +13,7 @@ def _resolve_path(path: str, workspace: Path | None = None, allowed_dir: Path | 
     if not p.is_absolute() and workspace:
         p = workspace / p
     resolved = p.resolve()
-    if allowed_dir and not str(resolved).startswith(str(allowed_dir.resolve())):
+    if allowed_dir and not resolved.is_relative_to(allowed_dir.resolve()):
         raise PermissionError(f"Path {path} is outside allowed directory {allowed_dir}")
     return resolved
 
@@ -47,19 +47,12 @@ class ReadFileTool(Tool):
         }
     
     async def execute(self, path: str, **kwargs: Any) -> str:
-        try:
-            file_path = _resolve_path(path, self._workspace, self._allowed_dir)
-            if not file_path.exists():
-                return f"Error: File not found: {path}"
-            if not file_path.is_file():
-                return f"Error: Not a file: {path}"
-
-            content = file_path.read_text(encoding="utf-8")
-            return content
-        except PermissionError as e:
-            return f"Error: {e}"
-        except Exception as e:
-            return f"Error reading file: {str(e)}"
+        # A pathname check cannot prove file provenance: even an inode with a
+        # single link may have originated outside the workspace. Path.resolve
+        # followed by open is also vulnerable to symlink/directory swaps. Until
+        # there is a trusted storage boundary, do not touch the filesystem,
+        # including when workspace access is explicitly enabled in the registry.
+        return "Error: workspace file reading is disabled for security"
 
 
 class WriteFileTool(Tool):
@@ -219,23 +212,6 @@ class ListDirTool(Tool):
         }
     
     async def execute(self, path: str, **kwargs: Any) -> str:
-        try:
-            dir_path = _resolve_path(path, self._workspace, self._allowed_dir)
-            if not dir_path.exists():
-                return f"Error: Directory not found: {path}"
-            if not dir_path.is_dir():
-                return f"Error: Not a directory: {path}"
-
-            items = []
-            for item in sorted(dir_path.iterdir()):
-                prefix = "📁 " if item.is_dir() else "📄 "
-                items.append(f"{prefix}{item.name}")
-
-            if not items:
-                return f"Directory {path} is empty"
-
-            return "\n".join(items)
-        except PermissionError as e:
-            return f"Error: {e}"
-        except Exception as e:
-            return f"Error listing directory: {str(e)}"
+        # Listing had the same check-then-use directory/symlink race and can
+        # leak outside names and types. Fail closed without resolving the path.
+        return "Error: workspace directory listing is disabled for security"

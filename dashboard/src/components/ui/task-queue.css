@@ -1,0 +1,34 @@
+.task-queue {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  color: #e8ecf6;
+  background: #171c2b;
+  border: 1px solid #3c465b;
+  border-radius: 16px;
+  padding: 1rem;
+  font-family: inherit;
+}
+.task-queue *, .task-queue *::before, .task-queue *::after { box-sizing: border-box; }
+.task-queue__header h2 { margin: 0 0 1rem; font-size: 1.125rem; }
+.task-queue__notice, .task-queue__empty { margin: 0; color: #d5dceb; overflow-wrap: anywhere; }
+.task-queue__notice--error, .task-queue__error { color: #ffd5d5; }
+.task-queue__form { display: flex; align-items: end; gap: .75rem; margin-bottom: 1rem; }
+.task-queue__field { flex: 1; min-width: 0; display: grid; gap: .4rem; font-size: .875rem; }
+.task-queue input, .task-queue button { font: inherit; border: 1px solid #7889a7; border-radius: 8px; min-height: 44px; }
+.task-queue input { min-width: 0; width: 100%; padding: .65rem; background: #101522; color: #fff; }
+.task-queue input::placeholder { color: #b2bfd3; }
+.task-queue button { padding: .55rem .85rem; color: #fff; background: #324e83; cursor: pointer; }
+.task-queue button:hover:not(:disabled) { background: #405f9b; }
+.task-queue button:disabled { opacity: .65; cursor: not-allowed; }
+.task-queue :is(button, input):focus-visible { outline: 3px solid #a9cbff; outline-offset: 3px; }
+.task-queue__list { display: grid; gap: .75rem; list-style: none; padding: 0; margin: 0; }
+.task-queue__item { min-width: 0; padding: .9rem; border: 1px solid #47536a; border-radius: 12px; background: #222a3c; overflow-wrap: anywhere; }
+.task-queue__item-heading { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: .5rem; }
+.task-queue__item h3 { margin: 0; font-size: 1rem; }
+.task-queue__status { border-radius: 999px; background: #344360; color: #fff; padding: .25rem .6rem; font-size: .8rem; }
+.task-queue__meta, .task-queue__error { margin: .65rem 0 0; font-size: .875rem; }
+.task-queue__progress { display: grid; gap: .35rem; margin-top: .65rem; font-size: .875rem; }
+.task-queue__progress progress { width: 100%; height: .75rem; accent-color: #9cbcff; }
+.task-queue__actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .75rem; }
+@media (max-width: 480px) { .task-queue__form { align-items: stretch; flex-direction: column; } .task-queue { padding: .75rem; } }

@@ -1,0 +1,3 @@
+# Compartilhamento Android desativado
+
+O protótipo de recebimento isolado por clientId foi mantido somente em `tests/share-worker.experimental.js`, sem registro no dashboard. O teste Chromium completo apresentou falha no aviso de rejeição e a reexecução não pôde ser confirmada; não há garantia de segurança suficiente para ativar. O manifest não é anunciado e o worker de produção rejeita o POST. Instalações antigas ainda podem manter um worker ou registros IndexedDB anteriores até a atualização/limpeza. Não há validação Android nem acesso móvel configurado. Use a opção manual de colar e revise antes de enviar.

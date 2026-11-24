@@ -204,7 +204,7 @@ class AgentDefaults(Base):
     max_tool_iterations: int = 20
     memory_window: int = 50
     fallback_models: list[str] = Field(default_factory=list)
-    autonomous: bool = True  # Total autonomy, bypass human confirmation constraints
+    autonomous: bool = False  # Legacy setting; never bypasses tool security policy.
 
 
 class AgentsConfig(Base):
@@ -222,10 +222,18 @@ class ProviderConfig(Base):
     extra_headers: dict[str, str] | None = None  # Custom headers (e.g. APP-Code for AiHubMix)
 
 
+class OpenCodeProviderConfig(ProviderConfig):
+    """Opt-in provider; credentials are accepted only from the environment."""
+
+    enabled: bool = False
+    api_key: str = Field(default="", exclude=True, repr=False)
+
+
 class ProvidersConfig(Base):
     """Configuration for LLM providers."""
 
     custom: ProviderConfig = Field(default_factory=ProviderConfig)  # Any OpenAI-compatible endpoint
+    opencode: OpenCodeProviderConfig = Field(default_factory=OpenCodeProviderConfig)
     anthropic: ProviderConfig = Field(default_factory=ProviderConfig)
     openai: ProviderConfig = Field(default_factory=ProviderConfig)
     openrouter: ProviderConfig = Field(default_factory=ProviderConfig)
@@ -298,7 +306,9 @@ class ToolsConfig(Base):
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
     google_calendar: GoogleCalendarConfig = Field(default_factory=GoogleCalendarConfig)
-    restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
+    restrict_to_workspace: bool = True  # Legacy compatibility; not an OS sandbox.
+    # Opt-in only. Path checks are best effort and do not prevent hard links or races.
+    enable_workspace_file_tools: bool = False
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 
 
@@ -324,6 +334,11 @@ class Config(BaseSettings):
         model_normalized = model_lower.replace("-", "_")
         model_prefix = model_lower.split("/", 1)[0] if "/" in model_lower else ""
         normalized_prefix = model_prefix.replace("-", "_")
+
+        # Explicit selection must never fall through to a different provider,
+        # including when disabled, missing a key, or containing a colon.
+        if model_prefix == "opencode":
+            return self.providers.opencode, "opencode"
 
         def _kw_matches(kw: str) -> bool:
             kw = kw.lower()
@@ -357,7 +372,7 @@ class Config(BaseSettings):
         # Fallback: gateways first, then others (follows registry order)
         # OAuth providers are NOT valid fallbacks — they require explicit model selection
         for spec in PROVIDERS:
-            if spec.is_oauth:
+            if spec.is_oauth or spec.name == "opencode":
                 continue
             p = getattr(self.providers, spec.name, None)
             if p and getattr(p, "enabled", True) and p.api_key:

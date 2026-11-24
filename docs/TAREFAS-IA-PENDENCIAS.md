@@ -1,0 +1,20 @@
+# Tarefas de IA em segundo plano: protótipo offline, NÃO habilitado
+
+`caiocore/task_queue/text_ai_draft.py` é independente da fila e do servidor. Não é um worker, não executa tarefas reais, não salva resultados e não foi exposto na API/dashboard. `execute_real` sempre falha fechado. `exercise_offline` aceita apenas o fake local, e só existe para testar o formato da chamada. O protótipo usa o formato `LLMProvider.chat` do Caio, mas **não está conectado ao provedor configurado**. A função interna de formato não é uma API de produção. Nenhuma chamada de rede é feita pelos testes. Não há subprocesso ou thread no protótipo.
+
+## Por que não habilitar
+
+- A fila atual guarda consentimento apenas para estatísticas locais; não há prova autenticada e persistente de consentimento específico para enviar o texto a um provedor identificável. `TestApproval` é um objeto de teste, NÃO é prova de consentimento nem autentica quem aprovou.
+- A seleção de provedor do Caio pode cair em outro provider, o gateway pode reencaminhar e as configurações de ambiente e SDK podem alterar o destino. Nome e URL informados ao `prepare` são apenas uma proposta, não uma verificação de destino ou origem. O usuário precisa ver o provedor/gateway, destino efetivo, modelo e exatamente o texto enviado, e consentir para aquela tarefa. Mesmo uma URL correta não comprova o destino final após um gateway.
+- `CustomProvider` usa SDK OpenAI sem configurar explicitamente retries; `LiteLLMProvider` não desativa explicitamente retries e pode registrar detalhes sensíveis de erros; `OpenAICodexProvider` usa `asyncio.to_thread` e tenta novamente sem verificação TLS após falha de certificado. Não são adequados, sem revisão, às restrições desta tarefa.
+- A fila atual não registra tipo de IA, aprovação vinculada e dados de roteamento; o worker só reivindica estatísticas locais. A API se limita a operador local em loopback com token, não identidade autenticada de usuário. Não deve ser aberta ao dashboard sem autenticação robusta. Nada disso foi alterado.
+
+## Antes de integrar
+
+1. Definir rota explícita e verificável, incluindo gateway e prestadores a jusante; impedir fallback, redirecionamentos, retry automático e reescrita de modelo. Revisar logs, proxy, SDK, TLS e política de retenção dos prestadores. Não assumir que o nome resolvido pelo config comprova quem receberá os dados.
+2. Apresentar a divulgação completa e obter aprovação autenticada e específica; armazenar atomicamente vínculo entre operador, tarefa, conteúdo exato, modelo, destino, versão da divulgação e aprovação, com integridade e política de retenção. Revalidar imediatamente antes do envio e invalidar após qualquer mudança. Um booleano ou hash desacompanhado de proveniência não prova consentimento.
+3. Criar tipo de tarefa próprio e reivindicação transacional com exclusividade. Persistir resposta ou falha genérica, sem mensagens de exceção ou credenciais; rejeitar tool calls, erros e respostas parciais. Dados de entrada e resultado exigem proteção e retenção adequadas. Nunca repetir automaticamente, inclusive após timeout ou reinício.
+4. Definir parada cooperativa e limite de tempo no transporte real, verificar cancelamento efetivo sem threads soltas ou subprocessos. Timeout/cancelamento local não garante que o provedor deixou de processar a solicitação; registrar resultado externo desconhecido e bloquear a tarefa após interrupção. `asyncio.timeout` sozinho não garante limite rígido para código que ignora cancelamento.
+5. Manter API fechada por padrão e restrição single-operator; somente conectar interface após autenticação e proteção CSRF/origem adequadas. Testar concorrência, revogação, interrupção, armazenamento e recuperação sem rede, com falso; testar caminho real somente após autorização explícita separada.
+
+O fake exercita apenas entrada única de texto, sem ferramentas, limite de tempo cooperativo e validação de resposta. Não demonstra persistência, segurança de consentimento ou funcionamento de um provedor real.

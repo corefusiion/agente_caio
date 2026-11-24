@@ -1,0 +1,64 @@
+.caio-message-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.5rem;
+  max-width: 100%;
+}
+
+.caio-message-actions__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.caio-message-actions__buttons button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 0.5rem;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+.caio-message-actions__buttons button svg {
+  width: 18px;
+  height: 18px;
+}
+
+.caio-message-actions__buttons button:hover,
+.caio-message-actions__buttons button[aria-pressed='true'] {
+  background: color-mix(in srgb, currentColor 14%, transparent);
+}
+
+.caio-message-actions__buttons button[aria-pressed='true'] {
+  border-color: currentColor;
+}
+
+.caio-message-actions__buttons button:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+.caio-message-actions__status {
+  flex: 1 1 12rem;
+  min-width: 0;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.caio-message-actions__status:empty {
+  display: none;
+}
+
+@media (forced-colors: active) {
+  .caio-message-actions__buttons button[aria-pressed='true'] {
+    outline: 2px solid Highlight;
+  }
+}
