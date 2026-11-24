@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Only the application icons generated from Caio's chosen avatar.
+!/public/icons/caio-rosto-192.png
+!/public/icons/caio-rosto-512.png
