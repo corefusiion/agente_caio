@@ -4,6 +4,8 @@ Assistente pessoal em desenvolvimento, com interface de conversa e componentes e
 
 ## Situação desta cópia
 
+> **Publicação parcial:** nem todos os componentes mencionados abaixo estão nesta branch. Algumas rotas legadas de Google continuam acessíveis e podem aceitar credenciais ou tokens; a bridge desativada não bloqueia essas rotas. Não exponha o serviço nem use a integração em produção.
+
 Este README descreve a branch de trabalho `seguranca-correcao`, não a versão principal. Inclui código experimental; outras alterações podem permanecer somente locais. Não usar em produção sem revisão de segurança e validação.
 
 | Área | Estado e limites |
