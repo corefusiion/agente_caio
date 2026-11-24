@@ -4,6 +4,8 @@ Atualização de 24/11/2026. Este relatório descreve código existente e limite
 
 ## Branch e publicação
 
+- Publicação parcial: componentes descritos neste relatório ainda podem existir somente na cópia local. As rotas legadas de credenciais e OAuth do Google não são bloqueadas pela desativação da bridge; não exponha o serviço nem use a integração em produção.
+
 - Esta revisão parte da branch `seguranca-correcao`, originalmente no commit `2113b84`. As melhorias experimentais da branch e os protótipos locais não são a versão principal; parte do trabalho pode permanecer somente local.
 - A `main` local está no commit `a1762b2`. A referência remota `main`, conferida nesta revisão, está em `c14b4d5`, seis commits à frente da `main` local; a branch de trabalho divergiu dessa referência. Não presumir que ela contenha as melhorias da branch. Conferir e reconciliar após revisão, sem sobrescrever o trabalho.
 - Nenhum deploy foi executado nesta revisão. Mudanças privadas e protótipos não incluídos devem ser revisados separadamente, assim como o histórico e possíveis dados sensíveis, antes de publicação adicional.
