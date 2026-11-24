@@ -9,6 +9,7 @@ import ActivitySteps from './activity-steps';
 import { MessageActions } from './message-actions';
 import { ReplySuggestions } from './reply-suggestions';
 import { ShareDraft } from './share-draft';
+import { AttachmentPicker, AttachmentPreview } from './chat-attachments';
 import { createWaitTracker, formatElapsed } from '../../lib/request-wait.js';
 
 interface Message {
@@ -16,6 +17,7 @@ interface Message {
   content: string;
   steps?: TraceStep[];
   failed?: boolean;
+  isNew?: boolean;
 }
 
 type ShareProps = { sharedText: string | null; onSharedTextTaken: () => void; shareError: boolean; onDismissShareError: () => void };
@@ -27,6 +29,12 @@ export function AnimatedAIChat({ sessionId, onChatUpdate, ...share }: { sessionI
 function SessionChat({ sessionId, onChatUpdate, sharedText, onSharedTextTaken, shareError, onDismissShareError }: { sessionId: string; onChatUpdate?: (id: string, msg: string) => void } & ShareProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [value, setValue] = useState('');
+  const [attachments, setAttachments] = useState<File[]>([]);
+  const attachmentsRef = useRef<File[]>([]);
+  const changeAttachments = useCallback((files: File[]) => {
+    attachmentsRef.current = files;
+    setAttachments(files);
+  }, []);
   const [receivedShare, setReceivedShare] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
   const [wait, setWait] = useState<{seconds: number; notice: string} | null>(null);
@@ -82,7 +90,8 @@ function SessionChat({ sessionId, onChatUpdate, sharedText, onSharedTextTaken, s
   }, [sessionId]);
 
   const send = useCallback(async () => {
-    if (!value.trim() || pendingRef.current) return;
+    // The current /api/chat is text-only; do not send text alone with files.
+    if (!value.trim() || pendingRef.current || attachmentsRef.current.length) return;
     const msg = value.trim();
     const request = Symbol('chat request');
     const isCurrent = () => mountedRef.current && currentSessionRef.current === sessionId && pendingRef.current === request;
@@ -92,7 +101,7 @@ function SessionChat({ sessionId, onChatUpdate, sharedText, onSharedTextTaken, s
     setSteps([]);
     setValue(''); setReceivedShare(false); adjust(true);
     shouldScroll.current = true;
-    setMessages(prev => [...prev, { role: 'user', content: msg }]);
+    setMessages(prev => [...prev, { role: 'user', content: msg, isNew: true }]);
     setIsTyping(true);
     let stopWait: (() => void) | null = null;
     try {
@@ -110,10 +119,10 @@ function SessionChat({ sessionId, onChatUpdate, sharedText, onSharedTextTaken, s
         : res?.status === 'initializing' && typeof res.content === 'string'
           ? res.content
           : 'Não foi possível obter uma resposta. O trabalho pode continuar no servidor; verifique antes de tentar novamente.';
-      setMessages(prev => [...prev, { role: 'assistant', content, failed: !success }]);
+      setMessages(prev => [...prev, { role: 'assistant', content, failed: !success, isNew: true }]);
     } catch {
       if (isCurrent()) {
-        setMessages(prev => [...prev, { role: 'assistant', content: 'Não foi possível obter uma resposta. O trabalho pode continuar no servidor; verifique antes de tentar novamente.', failed: true }]);
+        setMessages(prev => [...prev, { role: 'assistant', content: 'Não foi possível obter uma resposta. O trabalho pode continuar no servidor; verifique antes de tentar novamente.', failed: true, isNew: true }]);
       }
     } finally {
       stopWait?.();
@@ -131,7 +140,7 @@ function SessionChat({ sessionId, onChatUpdate, sharedText, onSharedTextTaken, s
             <div className="chat-welcome"><CaioAvatar size="welcome" /><p className="chat-eyebrow">OLÁ, EU SOU O CAIO</p><h2>Como posso ajudar?</h2><p>Converse comigo, organize ideias e acompanhe as atividades da sua conversa.</p></div>
           )}
           {messages.map((m, i) => (
-            <article className={`chat-message ${m.role === 'user' ? 'chat-message-user' : 'chat-message-assistant'}`} key={i}>
+            <article className={`chat-message ${m.role === 'user' ? 'chat-message-user' : 'chat-message-assistant'}${m.isNew ? ' chat-message-new' : ''}`} key={i}>
               <div className="chat-message-label">{m.role === 'user' ? 'Você' : 'Caio'}</div>
               {m.steps && m.steps.length > 0 && <details className="trace-details"><summary>Ver atividade desta resposta</summary><ActivitySteps steps={m.steps} pending={false} connected={false} /></details>}
               <div className="chat-message-content">
@@ -147,8 +156,15 @@ function SessionChat({ sessionId, onChatUpdate, sharedText, onSharedTextTaken, s
           ))}
           {isTyping && wait && <div className="chat-activity"><div className="chat-message-label">Caio</div>
             <section className="request-wait" aria-label="Espera desta resposta">
-              <p role="status" aria-live="polite" aria-atomic="true">{wait.notice}</p>
-              <p aria-live="off">Tempo aguardando: {formatElapsed(wait.seconds)}</p>
+              <span className="request-wait-art" aria-hidden="true">
+                <span className="request-wait-indicator" />
+                <span className="request-wait-spark request-wait-spark--one" />
+                <span className="request-wait-spark request-wait-spark--two" />
+              </span>
+              <div className="request-wait-copy">
+                <p role="status" aria-live="polite" aria-atomic="true">{wait.notice}</p>
+                <p aria-live="off">Tempo aguardando: {formatElapsed(wait.seconds)}</p>
+              </div>
             </section>
           </div>}
         </div>
@@ -169,7 +185,8 @@ function SessionChat({ sessionId, onChatUpdate, sharedText, onSharedTextTaken, s
           <button type="button" onClick={onSharedTextTaken}>Descartar compartilhamento</button>
         </section>}
         <ShareDraft disabled={isTyping} onPrepare={selectSuggestion} />
-        <div className="chat-composer"><label className="sr-only" htmlFor="chat-input">Mensagem para o Caio</label><textarea id="chat-input" ref={textareaRef} rows={1} placeholder="Escreva sua mensagem..." value={value} onChange={e => { setValue(e.target.value); adjust(); }} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); } }} /><button type="submit" disabled={!value.trim() || isTyping} aria-label="Enviar mensagem"><ArrowUp size={20} aria-hidden="true" /></button></div>
+        <AttachmentPreview files={attachments} onChange={changeAttachments} />
+        <div className="chat-composer"><AttachmentPicker files={attachments} onChange={changeAttachments} disabled={isTyping} /><label className="sr-only" htmlFor="chat-input">Mensagem para o Caio</label><textarea id="chat-input" ref={textareaRef} rows={1} placeholder="Escreva sua mensagem..." value={value} onChange={e => { setValue(e.target.value); adjust(); }} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); } }} /><button type="submit" disabled={!value.trim() || isTyping || attachments.length > 0} aria-label="Enviar mensagem"><ArrowUp size={20} aria-hidden="true" /></button></div>
         <p className="chat-hint">Enter para enviar · Shift + Enter para nova linha</p>
       </form></div>
     </div>

@@ -1,0 +1,18 @@
+.attachment-picker { position:relative; flex:none; }
+.chat-composer .attachment-toggle { background:#eff4f0; color:#365d4d; }
+.chat-composer .attachment-toggle:not(:disabled):hover { background:#dceae0; }
+.attachment-menu { position:absolute; z-index:10; left:0; bottom:calc(100% + 10px); min-width:205px; padding:6px; border:1px solid #d5e1d8; border-radius:14px; background:#fff; box-shadow:0 10px 28px rgba(37,55,45,.18); }
+.chat-composer .attachment-menu button { display:flex; align-items:center; gap:10px; width:100%; height:auto; min-height:44px; border-radius:8px; padding:10px; text-align:left; background:#fff; color:#284a3c; font-size:14px; }
+.chat-composer .attachment-menu button:not(:disabled):hover { background:#eff4f0; }
+.attachment-error { position:absolute; bottom:calc(100% + 10px); left:0; z-index:9; width:min(280px, 75vw); padding:9px; border-radius:8px; background:#fff5f1; color:#8a3027; font-size:13px; box-shadow:0 3px 12px #0002; }
+.attachment-preview { max-height:25vh; overflow-y:auto; margin:0 0 8px; padding:10px; border:1px solid #dce6de; border-radius:12px; background:#fff; color:#34483d; font-size:13px; }
+.attachment-preview p { line-height:1.4; margin-bottom:8px; }
+.attachment-preview ul { display:flex; flex-wrap:wrap; gap:6px; list-style:none; padding:0; margin:0 0 8px; }
+.attachment-preview li { display:flex; align-items:center; gap:8px; max-width:100%; min-width:0; padding:6px; border:1px solid #dce6de; border-radius:9px; }
+.attachment-preview img { width:40px; height:40px; object-fit:cover; border-radius:5px; }
+.attachment-name { min-width:0; overflow-wrap:anywhere; }
+.attachment-name small { display:block; color:#596a60; }
+.attachment-preview button { display:grid; place-items:center; flex:none; min-width:40px; min-height:40px; border-radius:8px; color:#365d4d; }
+.attachment-preview button:hover { background:#eff4f0; }
+.attachment-preview > small { color:#596a60; }
+@media (max-width: 400px) { .attachment-preview li { width:100%; } .attachment-name { flex:1; } }

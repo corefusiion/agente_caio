@@ -1,0 +1,10 @@
+.caio-page-toolbar { flex:none; min-height:44px; display:flex; justify-content:flex-end; align-items:center; padding:4px 14px; background:#fcfbf9; border-bottom:1px solid #ecebe6; }
+.caio-minimize-button { min-height:36px; display:inline-flex; align-items:center; gap:6px; padding:0 10px; border:1px solid #dcded8; border-radius:10px; color:#40534a; background:#fff; font-size:12px; font-weight:600; }
+.caio-minimize-button:hover { background:#f0f4f0; }
+.caio-minimize-button span { font-size:20px; line-height:1; }
+.caio-page-launcher { position:fixed; right:max(16px, env(safe-area-inset-right)); bottom:max(16px, env(safe-area-inset-bottom)); width:64px; height:64px; display:grid; place-items:center; border:1px solid #d5e1d8; border-radius:22px; background:#fff; box-shadow:0 6px 22px rgba(37,55,45,.16); cursor:pointer; }
+.caio-page-launcher-avatar { display:block; animation:caio-launcher-float 6s ease-in-out infinite; }
+.caio-page-launcher .caio-avatar { width:48px; border-radius:16px; }
+.caio-page-launcher:hover { box-shadow:0 8px 25px rgba(37,55,45,.22); }
+@keyframes caio-launcher-float { 0%, 100% { transform:translateY(0); } 50% { transform:translateY(-2px); } }
+@media (prefers-reduced-motion: reduce) { .caio-page-launcher-avatar { animation:none; } }
