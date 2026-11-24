@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import lucideDirectImports from './vite-plugins/lucide-direct-imports.js'
 import path from "path"
 import { fileURLToPath } from 'url'
 
@@ -8,7 +9,8 @@ const __dirname = path.dirname(__filename)
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react()],
+  plugins: [lucideDirectImports(), react()],
+  build: { reportCompressedSize: false, rollupOptions: { maxParallelFileOps: 8 } },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
