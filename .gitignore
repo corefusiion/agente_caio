@@ -48,3 +48,11 @@ caiocore/extras/api.env
 docker-compose.portainer.yml
 caio-stack/core/token.json
 caio-stack/core/credentials.json
+
+# Dados locais sensíveis não devem ser adicionados a novos commits.
+workspace/sessions/
+**/oauth_state.json
+**/google-token.json
+**/google-token.dpapi
+**/google-client.json
+**/calendar-owner-key

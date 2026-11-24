@@ -11,6 +11,14 @@
 
 ---
 
+## Estado do projeto e privacidade
+
+Esta branch é a versão principal do projeto. Algumas melhorias de interface estão sendo revisadas separadamente; integração prática com Google, envio e análise de anexos no chat ainda não estão disponíveis como funcionalidades concluídas nesta branch.
+
+**Privacidade:** não inclua conversas, credenciais, tokens ou arquivos pessoais em commits. As sessões foram removidas da versão atual, mas arquivos retirados ainda podem existir no histórico, em clones e em cópias. Caso alguma credencial tenha sido exposta, revogue-a e substitua-a; removê-la dos arquivos atuais não a invalida.
+
+---
+
 ## ⚡ A Evolução: CaioCore v5.2 (A Onipresença Cognitiva)
 
 Deixamos para trás a era dos multi-agentes fragmentados. Nesta evolução massiva, o **CaioCore** se consolidou como o *Mestre dos Magos*, aglomerando as habilidades de dezenas de especialistas focados (Vendas, Design, Automação, Programação, E-mails e Monitoramento) em **um único super-agente inteligente e soberano**. 
