@@ -3,10 +3,11 @@ import {
   Settings, MessageSquare, Activity, Layers,
   PanelLeftClose, PanelLeftOpen, Plus, MoreHorizontal, 
   Pin, Trash2, Pencil, Check, X, Shield, Globe, 
-  Mail, Calendar, Workflow, Sparkles
+  Mail, Calendar, Workflow, Sparkles, Plug
 } from 'lucide-react';
-import { motion, AnimatePresence, MotionConfig } from 'framer-motion';
+import { motion, AnimatePresence, MotionConfig, useReducedMotion } from 'framer-motion';
 import CoreSettings from './pages/CoreSettings';
+import IntegrationsPage from './pages/IntegrationsPage';
 import MonitorPage from './pages/MonitorPage';
 import { AnimatedAIChat } from './components/ui/animated-ai-chat';
 import AgentsPage from './pages/AgentsPage';
@@ -14,6 +15,7 @@ import ArtifactCanvas from './components/ui/artifact-canvas';
 import { cn } from './lib/utils';
 import { readMessageTextSize, writeMessageTextSize } from './lib/display-preference';
 import { startShareReceipt } from './lib/share-receipt';
+import { MinimizedCaio } from './components/ui/minimized-caio';
 import './chat.css';
 
 /* ── Chat session helpers ──────────────────────────────────────── */
@@ -43,6 +45,20 @@ function updateSessionInList(sessions: ChatSession[], id: string, firstMsg: stri
 
 /* ── App ───────────────────────────────────────────────────────── */
 function App() {
+  const reduceMotion = useReducedMotion();
+  const [isMinimized, setIsMinimized] = useState(false);
+  const minimizeButtonRef = useRef<HTMLButtonElement>(null);
+  const reopenButtonRef = useRef<HTMLButtonElement>(null);
+  const wasMinimized = useRef(false);
+  useEffect(() => {
+    if (isMinimized) {
+      wasMinimized.current = true;
+      reopenButtonRef.current?.focus();
+    } else if (wasMinimized.current) {
+      minimizeButtonRef.current?.focus();
+      wasMinimized.current = false;
+    }
+  }, [isMinimized]);
   const [currentPage, setCurrentPage] = useState('chat');
   const [sharedText, setSharedText] = useState<string | null>(null);
   const [shareError, setShareError] = useState(false);
@@ -83,6 +99,7 @@ function App() {
     { id: 'chat',     label: 'Mensagens',       icon: MessageSquare },
     { id: 'monitor',  label: 'Sistema',         icon: Activity },
     { id: 'agents',   label: 'Habilidades',     icon: Layers },
+    { id: 'integrations', label: 'Integrações', icon: Plug },
     { id: 'settings', label: 'Preferências',    icon: Settings },
   ];
 
@@ -188,17 +205,19 @@ function App() {
   });
 
   return (
-    <MotionConfig reducedMotion="user"><div className={cn("flex h-screen bg-white text-zinc-900 overflow-hidden font-sans antialiased", messageTextSize === 'large' && 'large-message-text')} style={{ height: '100dvh' }}>
+    <MotionConfig reducedMotion="user"><div className={cn("flex h-screen bg-white text-zinc-900 overflow-hidden font-sans antialiased", messageTextSize === 'large' && 'large-message-text')} style={{ height: '100dvh', display: isMinimized ? 'none' : undefined }}>
       
       {/* ── Arsenal Command Modal ───────────────────────── */}
       <AnimatePresence>
         {isSkillModalOpen && (
           <motion.div 
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            transition={reduceMotion ? { duration: 0 } : undefined}
             className="fixed inset-0 z-[200] flex items-center justify-center bg-zinc-900/40 backdrop-blur-sm p-4" role="dialog" aria-modal="true" aria-labelledby="skills-title"
           >
             <motion.div ref={skillDialogRef}
               initial={{ scale: 0.98, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.98, opacity: 0 }}
+              transition={reduceMotion ? { duration: 0 } : undefined}
               className="bg-white w-full max-w-xl rounded-2xl shadow-2xl overflow-hidden border border-zinc-200"
             >
               <div className="px-6 py-5 border-b border-zinc-100 flex items-center justify-between">
@@ -240,7 +259,7 @@ function App() {
             initial={{ width: 0, opacity: 0 }}
             animate={{ width: 280, opacity: 1 }}
             exit={{ width: 0, opacity: 0 }}
-            transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+            transition={{ duration: reduceMotion ? 0 : 0.2, ease: [0.16, 1, 0.3, 1] }}
             className="app-sidebar flex flex-col h-full bg-[#FAFAFA] overflow-hidden shrink-0 border-r border-zinc-200/60"
           >
             <div className="flex flex-col h-full w-[280px]">
@@ -349,10 +368,10 @@ function App() {
               <div className="p-4 shrink-0 bg-white/40">
                 <div className="flex items-center gap-3 px-2 py-2 rounded-xl hover:bg-white transition-all cursor-pointer group">
                   <div className="w-8 h-8 rounded-lg bg-zinc-900 flex items-center justify-center text-white text-[10px] font-black shadow-lg">
-                    GS
+                    U
                   </div>
                   <div className="flex flex-col min-w-0">
-                    <span className="text-[13px] text-zinc-900 font-bold truncate leading-none">Gleisson Santos</span>
+                    <span className="text-[13px] text-zinc-900 font-bold truncate leading-none">Usuário</span>
                     <span className="text-[10px] text-zinc-400 mt-1 uppercase font-bold tracking-tighter">Caio Engine v5.0</span>
                   </div>
                 </div>
@@ -364,6 +383,11 @@ function App() {
 
       {/* ── Main Canvas ──────────────────────────────────── */}
       <main className="flex-1 flex flex-col h-full overflow-hidden min-w-0 relative bg-white">
+        <div className="caio-page-toolbar">
+          <button ref={minimizeButtonRef} type="button" className="caio-minimize-button" onClick={() => setIsMinimized(true)} title="Minimizar Caio nesta página">
+            <span aria-hidden="true">−</span> Minimizar
+          </button>
+        </div>
         <AnimatePresence>
           {activeArtifact && (
             <ArtifactCanvas 
@@ -389,7 +413,7 @@ function App() {
           <motion.div
             key={currentPage}
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            transition={{ duration: 0.15 }}
+            transition={{ duration: reduceMotion ? 0 : 0.15 }}
             className="flex-1 w-full h-full overflow-hidden flex flex-col"
           >
             {currentPage === 'chat' && (
@@ -408,6 +432,7 @@ function App() {
                   <div className="max-w-4xl mx-auto">
                     {currentPage === 'monitor' && <MonitorPage />}
                     {currentPage === 'agents' && <AgentsPage />}
+                    {currentPage === 'integrations' && <IntegrationsPage />}
                     {currentPage === 'settings' && <CoreSettings messageTextSize={messageTextSize} onMessageTextSizeChange={changeMessageTextSize} />}
                   </div>
                </div>
@@ -415,7 +440,9 @@ function App() {
           </motion.div>
         </AnimatePresence>
       </main>
-    </div></MotionConfig>
+    </div>
+    {isMinimized && <MinimizedCaio buttonRef={reopenButtonRef} onReopen={() => setIsMinimized(false)} />}
+    </MotionConfig>
   );
 }
 
