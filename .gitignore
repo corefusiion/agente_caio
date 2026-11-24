@@ -41,6 +41,7 @@ out/
 
 # === 🔒 SECURITY: Never push secrets ===
 config.json
+.caio-setup-pending
 credentials.json
 token.pickle
 *.pickle
