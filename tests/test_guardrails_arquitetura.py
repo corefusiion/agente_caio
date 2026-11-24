@@ -92,6 +92,7 @@ def test_real_agent_registration_and_dispatch_enforce_reviewed_boundary(tmp_path
     config = Config.model_validate({"tools": {"enableWorkspaceFileTools": opt_in},
                                     "agents": {"defaults": {"autonomous": True}}})
     provider = Mock()
+    provider.disable_agent_tools = False
     provider.get_default_model.return_value = "offline-test"
     agent = AgentLoop(MessageBus(), provider, tmp_path, config=config,
                       mcp_servers={"untrusted": {"command": "never-run"}},
