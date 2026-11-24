@@ -1,0 +1,11 @@
+# Google Agenda: bridge do dashboard desativada
+
+**Estado atual: não funciona, mesmo com opt-in.** `CalendarBridge.__init__` lança incondicionalmente `RuntimeError('Calendar bridge disabled: session integration incomplete')`, antes de inicializar a bridge. O código depois desse erro no construtor e o antigo contrato HTTP não são um fluxo funcional. Não ativar nem expor a bridge, nem usar a interface para conectar uma conta.
+
+No `secure_proxy.py`, mesmo que `CAIO_CALENDAR_PRIVATE_DIR` esteja definido e as condições de loopback sejam atendidas, a tentativa de criação falha e o proxy mantém `CALENDAR_BRIDGE = None`. Após as validações gerais do proxy, requisições ao prefixo `/api/local/calendar` recebem 503 se essa variável estiver definida e não vazia, ou 404 caso contrário; uma requisição inválida pode ser rejeitada antes com 403. Isso não habilita as rotas de login, autorização ou outras operações da bridge. Os comentários de opt-in e o código remanescente não constituem instruções de ativação.
+
+## Serviço de sessão experimental
+
+`CalendarSessionAuthority` e o serviço de calendário associado são experimentais e foram exercitados em testes offline. A autoridade mantém sessões em memória num único processo, mas **não autentica pessoas**. Login, logout, listener OAuth e entrega HTTP da bridge ainda não estão integrados à autoridade; validar um resultado internamente não garante sua entrega antes de uma revogação. Não há integração segura e funcional de ponta a ponta com o dashboard. O serviço não foi validado no Windows e não houve teste real com o Google ou uma conta Google. Testes offline não comprovam segurança nem funcionamento em produção. Consulte [GOOGLE_SESSION_TRANSACTION.md](../caiocore/server/GOOGLE_SESSION_TRANSACTION.md) para os limites da experiência; documentos históricos não comprovam funcionalidade atual.
+
+**Nenhuma credencial histórica deve ser utilizada**, incluindo tokens, segredos de cliente, chaves ou autorizações anteriores. Não usar credenciais reais nessa implementação experimental. Não substituir a bridge pelos endpoints Google legados ou pela ferramenta antiga como suposto fluxo seguro. O bloqueio da bridge não apaga tokens existentes nem revoga acesso concedido no Google; qualquer limpeza ou revogação exige procedimento seguro separado e confirmação apropriada.

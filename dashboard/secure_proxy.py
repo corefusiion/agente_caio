@@ -31,6 +31,20 @@ if BIND == '0.0.0.0' and BACKEND != 'caio-agent':
 if not ROOT.is_dir() or not (ROOT / 'index.html').is_file():
     sys.exit('Dashboard build missing: build dashboard/dist first')
 
+# Opt-in only. Unlike the legacy proxy, this bridge requires a direct loopback
+# bind and its own owner authentication. Never enable in Compose or a tunnel.
+CALENDAR_PREFIX = '/api/local/calendar'
+CALENDAR_BRIDGE = None
+CALENDAR_CONFIGURED = bool(os.environ.get('CAIO_CALENDAR_PRIVATE_DIR'))
+if CALENDAR_CONFIGURED and BIND == '127.0.0.1' and BACKEND == '127.0.0.1':
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from dashboard.calendar_local_bridge import CalendarBridge
+        CALENDAR_BRIDGE = CalendarBridge(os.environ['CAIO_CALENDAR_PRIVATE_DIR'])
+    except Exception:
+        # Keep the legacy proxy working, but never expose a half-initialized bridge.
+        CALENDAR_BRIDGE = None
+
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.0'  # EOF frames streams; flush each SSE chunk
@@ -83,6 +97,10 @@ class Handler(BaseHTTPRequestHandler):
         if not self.validate():
             return self.reject(403)
         path = unquote(urlsplit(self.path).path)
+        if path == CALENDAR_PREFIX or path.startswith(CALENDAR_PREFIX + '/'):
+            if CALENDAR_BRIDGE is None:
+                return self.reject(503 if CALENDAR_CONFIGURED else 404)
+            return CALENDAR_BRIDGE.handle(self)
         # The UI also uses this exact legacy read-only API endpoint.
         if path == '/events' and self.command == 'GET':
             return self.proxy()
